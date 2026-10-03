@@ -1,0 +1,8 @@
+{
+  "name": "autoclip-render",
+  "private": true,
+  "description": "CLI HyperFrames utilisé par le pipeline pour lint et rendre les compositions.",
+  "devDependencies": {
+    "hyperframes": "0.8.111"
+  }
+}

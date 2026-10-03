@@ -1,0 +1,285 @@
+"""Orchestrateur : un moniteur qui crée des moments, puis un worker par étape.
+
+Chaque worker prend un moment dans un statut donné, fait son travail et le fait passer
+au statut suivant. Un échec relâche le moment pour un nouvel essai (3 maximum).
+"""
+
+import asyncio
+import json
+import logging
+import shutil
+import time
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from pathlib import Path
+
+import httpx
+
+from .analysis.frames import extract_frames, probe_duration, probe_size
+from .analysis.transcribe import transcribe
+from .config import Settings
+from .db import Database
+from .editor.claude import ClipComposer, ClipEditor
+from .fetch.downloader import download_clip
+from .models import EditDecision, Moment, Platform, Status
+from .monitor.detector import SpikeDetector
+from .monitor.twitch import TwitchAPI, TwitchChat
+from .render.hyperframes import LintError, Renderer, build_segments, remap_words
+from .review.telegram import ReviewBot
+
+log = logging.getLogger(__name__)
+
+WINDOW_S = 10  # taille d'une fenêtre d'activité du chat
+IDLE_SLEEP_S = 3
+
+Step = Callable[[Moment], Awaitable[None]]
+
+
+class Pipeline:
+    def __init__(self, settings: Settings):
+        self.s = settings
+        self.db = Database(settings.db_path)
+        self.http = httpx.AsyncClient(timeout=20)
+        self.twitch = TwitchAPI(settings, self.http)
+        self.twitch_chat = TwitchChat()
+        self.detector = SpikeDetector(
+            ratio=settings.spike_ratio,
+            cooldown_s=settings.dedup_window_s,
+            warmup=settings.detector_warmup,
+            min_activity=settings.detector_min_activity,
+            alpha=settings.detector_alpha,
+        )
+        self.editor = ClipEditor(settings)
+        self.composer = ClipComposer(settings)
+        self.renderer = Renderer(settings.max_parallel_renders, settings.render_quality)
+        self.review = ReviewBot(settings, self.on_review)
+        # login -> broadcaster_id, rempli à chaque rafraîchissement du top.
+        self.twitch_ids: dict[str, str] = {}
+
+    def work_dir(self, m: Moment) -> Path:
+        return self.s.work_dir / f"{m.id:06d}_{m.platform}_{m.channel}"
+
+    # --- Nettoyage du disque ----------------------------------------------------
+
+    def discard_files(self, moment_id: int) -> None:
+        """Supprime tout le dossier de travail d'un moment qui ne sera pas publié."""
+        for d in self.s.work_dir.glob(f"{moment_id:06d}_*"):
+            shutil.rmtree(d, ignore_errors=True)
+            log.info("Fichiers du moment #%d supprimés", moment_id)
+
+    def slim_files(self, moment_id: int) -> None:
+        """Après validation : garde final.mp4 (et la composition), supprime les intermédiaires."""
+        for d in self.s.work_dir.glob(f"{moment_id:06d}_*"):
+            for name in ("source.mp4", "render/source.mp4", "telegram_preview.mp4"):
+                (d / name).unlink(missing_ok=True)
+            shutil.rmtree(d / "frames", ignore_errors=True)
+
+    async def cleanup_work_dirs(self) -> None:
+        """Au démarrage : supprime les dossiers des moments rejetés, abandonnés ou inconnus."""
+        if not self.s.work_dir.exists():
+            return
+        statuses = await self.db.statuses()
+        dead = {Status.REJECTED.value, Status.FAILED.value}
+        for d in self.s.work_dir.iterdir():
+            if not (d.is_dir() and d.name[:6].isdigit()):
+                continue
+            moment_id = int(d.name[:6])
+            status = statuses.get(moment_id)
+            if status is None or status in dead:
+                shutil.rmtree(d, ignore_errors=True)
+                log.info("Nettoyage : dossier du moment #%d supprimé (%s)", moment_id, status)
+                continue
+            if status == Status.APPROVED.value:
+                self.slim_files(moment_id)
+            # La copie de la source dans render/ ne sert plus une fois le rendu fait.
+            if (d / "final.mp4").exists():
+                (d / "render" / "source.mp4").unlink(missing_ok=True)
+
+    # --- Surveillance ---------------------------------------------------------
+
+    async def refresh_top_streams(self) -> None:
+        while True:
+            try:
+                streams = await self.twitch.top_streams(self.s.top_n_streams, self.s.stream_language)
+                self.twitch_ids = {s["user_login"]: s["user_id"] for s in streams}
+                self.twitch_chat.set_channels(set(self.twitch_ids))
+                log.info("Top Twitch : %s", ", ".join(self.twitch_ids))
+            except Exception:
+                log.exception("Impossible de récupérer le top Twitch")
+            await asyncio.sleep(self.s.poll_interval_s)
+
+    async def detect_loop(self) -> None:
+        while True:
+            await asyncio.sleep(WINDOW_S)
+            now = time.time()
+            for channel, activity in self.twitch_chat.drain().items():
+                score = self.detector.update(channel, activity, now)
+                if score is None:
+                    continue
+                m = Moment(
+                    platform=Platform.TWITCH,
+                    channel=channel,
+                    detected_at=datetime.now(UTC),
+                    score=score,
+                )
+                m.id = await self.db.insert_moment(m)
+                log.info("Moment fort #%d sur %s (x%.1f)", m.id, channel, score)
+
+    # --- Étapes ---------------------------------------------------------------
+
+    async def step_get_clip(self, m: Moment) -> None:
+        # Absente du top en mémoire (redémarrage, streamer sorti du top) : on demande à Twitch.
+        broadcaster_id = self.twitch_ids.get(m.channel) or await self.twitch.user_id(m.channel)
+        if self.s.auto_create_clips:
+            url = await self.twitch.create_clip(broadcaster_id)
+        else:
+            url = None
+            max_wait = self.s.clip_max_wait_s
+            while url is None:
+                elapsed = (datetime.now(UTC) - m.detected_at).total_seconds()
+                if elapsed >= max_wait:
+                    raise RuntimeError(f"Aucun clip créé par les viewers en {max_wait} s")
+                await asyncio.sleep(min(self.s.clip_poll_s, max_wait - elapsed))
+                url = await self.twitch.find_clip_for_moment(broadcaster_id, m.detected_at)
+        await self.db.advance(m, Status.CLIPPED, clip_url=url)
+
+    async def step_download(self, m: Moment) -> None:
+        path = await download_clip(m.clip_url, self.work_dir(m))
+        await self.db.advance(m, Status.DOWNLOADED, video_path=path)
+
+    async def step_analyze(self, m: Moment) -> None:
+        wd = self.work_dir(m)
+        video = Path(m.video_path)
+        transcript = await transcribe(video, wd / "transcript.json", self.s.whisper_model)
+        await extract_frames(video, wd / "frames")
+        await self.db.advance(m, Status.ANALYZED, transcript_path=transcript, frames_dir=wd / "frames")
+
+    async def step_decide(self, m: Moment) -> None:
+        video = Path(m.video_path)
+        transcript = json.loads(Path(m.transcript_path).read_text(encoding="utf-8"))
+        # Presque personne ne parle : Claude rejetterait le clip, inutile de payer l'appel.
+        if len(transcript["words"]) < self.s.min_transcript_words:
+            await self.db.advance(m, Status.REJECTED,
+                                  error=f"Moins de {self.s.min_transcript_words} mots transcrits")
+            self.discard_files(m.id)
+            return
+        decision = await self.editor.decide(
+            channel=m.channel,
+            platform=m.platform,
+            duration_s=await probe_duration(video),
+            transcript=transcript,
+            frames=sorted(Path(m.frames_dir).glob("*.jpg")),
+        )
+        if not decision.keep:
+            await self.db.advance(m, Status.REJECTED, decision_json=decision.model_dump_json(),
+                                  error=f"Claude : {decision.reason}")
+            self.discard_files(m.id)
+            return
+        await self.db.advance(m, Status.DECIDED, decision_json=decision.model_dump_json())
+
+    async def step_render(self, m: Moment) -> None:
+        """Claude écrit la composition HyperFrames, on la valide au lint puis on la rend."""
+        decision = EditDecision.model_validate_json(m.decision_json)
+        transcript = json.loads(Path(m.transcript_path).read_text(encoding="utf-8"))
+        video, wd = Path(m.video_path), self.work_dir(m)
+
+        # Nouvel essai après une coupure réseau ou un lint : on réutilise la composition déjà
+        # payée. Seul un rendu qui a planté justifie d'en redemander une à Claude.
+        previous = wd / "render" / "index.html"
+        if previous.exists() and "Rendu échoué" not in (m.error or ""):
+            html = previous.read_text(encoding="utf-8")
+            log.info("Moment #%d : composition existante réutilisée", m.id)
+        else:
+            html = await self.composer.compose(
+                decision=decision,
+                segments=build_segments(decision.cuts),
+                words=remap_words(transcript["words"], decision.cuts),
+                source_size=await probe_size(video),
+                frames=sorted(Path(m.frames_dir).glob("*.jpg")),
+            )
+        for attempt in range(self.s.max_lint_fixes + 1):
+            project = self.renderer.prepare(html, video, wd)
+            try:
+                await self.renderer.lint(project)
+                break
+            except LintError as e:
+                if attempt == self.s.max_lint_fixes:
+                    raise
+                log.info("Composition #%d refusée par le lint, correction par Claude", m.id)
+                html = await self.composer.fix(html, str(e))
+
+        out = await self.renderer.render(project, wd / "final.mp4")
+        (project / "source.mp4").unlink(missing_ok=True)  # copie de travail, plus utile
+        await self.db.advance(m, Status.RENDERED, render_path=out)
+
+    async def step_review(self, m: Moment) -> None:
+        """Envoie le rendu sur Telegram ; la suite dépend du bouton cliqué (on_review)."""
+        decision = EditDecision.model_validate_json(m.decision_json)
+        await self.review.send_for_review(m.id, m.channel, m.score, Path(m.render_path), decision)
+        (Path(m.render_path).parent / "telegram_preview.mp4").unlink(missing_ok=True)
+        await self.db.advance(m, Status.PENDING_REVIEW)
+        log.info("Moment #%d envoyé sur Telegram pour validation", m.id)
+
+    async def on_review(self, moment_id: int, approved: bool) -> bool:
+        applied = await self.db.set_review_result(moment_id, approved)
+        if applied:
+            log.info("Moment #%d %s sur Telegram", moment_id, "approuvé" if approved else "rejeté")
+            if approved:
+                self.slim_files(moment_id)
+            else:
+                self.discard_files(moment_id)
+        return applied
+
+    # TODO : step_publish (APPROVED -> PUBLISHED via publish.youtube / publish.tiktok)
+
+    # --- Boucle générique -------------------------------------------------------
+
+    async def worker(self, status: Status, step: Step, concurrency: int = 1) -> None:
+        sem = asyncio.Semaphore(concurrency)
+        tasks: set[asyncio.Task] = set()
+
+        async def run(m: Moment) -> None:
+            try:
+                await step(m)
+            except Exception as e:
+                log.exception("Étape %s échouée pour le moment #%d", status, m.id)
+                if await self.db.fail(m, f"{type(e).__name__}: {e}"):
+                    self.discard_files(m.id)  # abandonné après 3 essais
+            finally:
+                sem.release()
+
+        while True:
+            await sem.acquire()
+            m = await self.db.claim(status)
+            if m is None:
+                sem.release()
+                await asyncio.sleep(IDLE_SLEEP_S)
+                continue
+            task = asyncio.create_task(run(m))
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+
+    async def run(self) -> None:
+        await self.db.connect()
+        await self.cleanup_work_dirs()
+        review_tasks = []
+        if self.review.enabled:
+            review_tasks = [self.review.run(), self.worker(Status.RENDERED, self.step_review)]
+        else:
+            log.warning("Telegram non configuré : les rendus resteront au statut rendered")
+        try:
+            await asyncio.gather(
+                *review_tasks,
+                self.twitch_chat.run(),
+                self.refresh_top_streams(),
+                self.detect_loop(),
+                self.worker(Status.DETECTED, self.step_get_clip, self.s.max_clip_searches),
+                self.worker(Status.CLIPPED, self.step_download),
+                self.worker(Status.DOWNLOADED, self.step_analyze),
+                self.worker(Status.ANALYZED, self.step_decide),
+                self.worker(Status.DECIDED, self.step_render),
+            )
+        finally:
+            await self.http.aclose()
+            await self.review.close()
+            await self.db.close()
