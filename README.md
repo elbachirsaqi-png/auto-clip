@@ -28,7 +28,7 @@ detected -> clipped -> downloaded -> analyzed -> decided -> rendered
 | Composition écrite par Claude | `editor/claude.py`, `editor/compose_prompt.md` | fait |
 | Lint + rendu | `render/hyperframes.py` | fait |
 | Validation Telegram | `review/telegram.py` | fait (boutons Publier / Rejeter) |
-| Publication YouTube / TikTok | `publish/` | à faire |
+| Kit de publication (tu publies toi-même) | `publish/kit.py` | fait : `data/a_publier/` + textes sur Telegram |
 | Kick | `monitor/kick.py` | à faire |
 
 ## Installation

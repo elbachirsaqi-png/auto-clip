@@ -72,6 +72,9 @@ class EditDecision(BaseModel):
     facecam: FaceCam | None = None
     highlight_words: list[str] = Field(description="Mots des sous-titres à mettre en valeur")
     title: str
+    description: str = Field(
+        default="", description="Description YouTube : les 2 premières lignes sont les seules lues"
+    )
     hashtags: list[str]
 
     def validate_against(self, duration_s: float, min_len: float = 8, max_len: float = 60) -> None:

@@ -207,8 +207,10 @@ class DashboardPage(ctk.CTkFrame):
         top = ctk.CTkFrame(box, fg_color="transparent")
         top.pack(fill="x", padx=16, pady=(12, 6))
         ctk.CTkLabel(top, text="Derniers moments", font=font(15, "bold")).pack(side="left")
+        ctk.CTkButton(top, text="📂  Vidéos à publier", width=170, height=30, font=font(12, "bold"),
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.open_publish_dir).pack(side="right")
         ctk.CTkLabel(top, text="Double-clic : ouvrir la vidéo ou le dossier", font=font(12),
-                     text_color=MUTED).pack(side="right")
+                     text_color=MUTED).pack(side="right", padx=12)
 
         style = ttk.Style()
         style.theme_use("default")
@@ -287,11 +289,20 @@ class DashboardPage(ctk.CTkFrame):
                              values=(id_, local, channel, category or "", f"x{score:.1f}", label,
                                      title[:140]))
 
+    def open_publish_dir(self):
+        folder = ROOT / "data/a_publier"
+        folder.mkdir(parents=True, exist_ok=True)
+        os.startfile(folder)
+
     def open_selected(self, _event):
         sel = self.tree.selection()
         if not sel:
             return
         pattern = f"{int(sel[0]):06d}_*"
+        kit = sorted((ROOT / "data/a_publier").glob(f"*_{pattern}.mp4"))
+        if kit:
+            os.startfile(kit[0])
+            return
         work = ROOT / "data/work"
         dirs = [*work.glob(pattern), *work.glob(f"*/{pattern}")]
         if not dirs:

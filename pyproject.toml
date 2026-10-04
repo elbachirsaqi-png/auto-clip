@@ -17,7 +17,6 @@ dependencies = [
 # Lourd (CTranslate2) : à installer sur la machine qui transcrit.
 transcribe = ["faster-whisper>=1.1"]
 review = ["python-telegram-bot>=21"]
-publish = ["google-api-python-client>=2.130", "google-auth-oauthlib>=1.2"]
 # Application de bureau AutoClip.exe (scripts/build_exe.py).
 gui = ["customtkinter>=5.2", "pyinstaller>=6.11", "pillow>=10"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6"]

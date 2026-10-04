@@ -28,6 +28,7 @@ from .models import EditDecision, Moment, Platform, Status
 from .monitor.detector import SpikeDetector
 from .monitor.kick import KickAPI, KickChat
 from .monitor.twitch import TwitchAPI, TwitchChat
+from .publish.kit import build_kit, description
 from .render.hyperframes import LintError, Renderer, build_segments, remap_words
 from .review.telegram import ReviewBot
 
@@ -326,10 +327,27 @@ class Pipeline:
             if not approved:
                 self.discard_files(moment_id)
             elif stage == "final":
-                self.slim_files(moment_id)
+                await self.prepare_publish_kit(moment_id)
         return applied
 
-    # TODO : step_publish (APPROVED -> PUBLISHED via publish.youtube / publish.tiktok)
+    async def prepare_publish_kit(self, moment_id: int) -> None:
+        """Vidéo approuvée : kit dans data/a_publier/ et textes envoyés sur Telegram.
+
+        La publication sur YouTube se fait à la main : rien ne part automatiquement.
+        """
+        m = await self.db.get(moment_id)
+        if m is None or not m.render_path or not Path(m.render_path).exists():
+            log.warning("Moment #%d : vidéo finale introuvable, pas de kit", moment_id)
+            return
+        decision = EditDecision.model_validate_json(m.decision_json)
+        video, _ = build_kit(m, decision, Path(m.render_path))
+        self.discard_files(moment_id)  # la vidéo est dans le kit, le reste ne sert plus
+        log.info("Kit de publication prêt : %s", video.name)
+        # Deux messages séparés : un appui long pour copier chacun dans YouTube Studio.
+        await self.review.send_text(f"📋 À publier (#{moment_id}) · titre :")
+        await self.review.send_text(decision.title)
+        await self.review.send_text(description(decision, m))
+        await self.review.send_text(f"📁 Sur le PC : data/a_publier/{video.name}")
 
     # --- Boucle générique -------------------------------------------------------
 

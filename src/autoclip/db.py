@@ -103,7 +103,7 @@ class Database:
         await self.conn.commit()
         if row is None:
             return None
-        return Moment(**{k: row[k] for k in row.keys() if k in Moment.model_fields})
+        return Moment(**{k: row[k] for k in row.keys() if k in Moment.model_fields})  # noqa: SIM118
 
     async def advance(self, m: Moment, new_status: Status, **fields) -> None:
         """Enregistre les champs produits par l'étape et passe au statut suivant."""
@@ -157,6 +157,13 @@ class Database:
         )
         await self.conn.commit()
         return cur.rowcount == 1
+
+    async def get(self, moment_id: int) -> Moment | None:
+        async with self.conn.execute("SELECT * FROM moments WHERE id = ?", (moment_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return Moment(**{k: row[k] for k in row.keys() if k in Moment.model_fields})  # noqa: SIM118
 
     async def statuses(self) -> dict[int, str]:
         async with self.conn.execute("SELECT id, status FROM moments") as cur:

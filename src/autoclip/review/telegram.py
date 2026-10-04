@@ -147,6 +147,9 @@ class ReviewBot:
                 "caption": f"{message.get('caption', '')}\n\n{verdict}"[:1024],
             })
 
+    async def send_text(self, text: str) -> None:
+        await self._call("sendMessage", json={"chat_id": self.s.telegram_chat_id, "text": text[:4096]})
+
     async def close(self) -> None:
         await self._http.aclose()
 
