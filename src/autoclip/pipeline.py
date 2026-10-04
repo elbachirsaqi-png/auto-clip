@@ -164,7 +164,7 @@ class Pipeline:
                 self.twitch_ids = {s["user_login"]: s["user_id"] for s in streams}
                 self.twitch_games = {s["user_login"]: s.get("game_name") or "" for s in streams}
                 self.twitch_chat.set_channels(set(self.twitch_ids))
-                log.info("Surveillés : %s", ", ".join(self.twitch_ids) or "aucun stream en live")
+                log.info("Twitch surveillé : %s", ", ".join(self.twitch_ids) or "aucun stream en live")
                 if watched:
                     live = {s["user_login"] for s in live_watched}
                     log.info("Liste perso : %d/%d en live", len(live), len(watched))
