@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     kick_client_id: str = ""
     kick_client_secret: str = ""
 
+    # api = clé API facturée à l'usage ; subscription = abonnement Claude via Claude Code (claude -p).
+    claude_backend: str = "api"
     anthropic_api_key: str = ""
     claude_model: str = "claude-opus-5-5"
     # Modèle de l'étape de décision (garder / couper). Vide = même modèle que claude_model.

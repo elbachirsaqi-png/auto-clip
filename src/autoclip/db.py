@@ -110,6 +110,15 @@ class Database:
         )
         await self.conn.commit()
 
+    async def pause(self, m: Moment, reason: str) -> None:
+        """Relâche le moment sans compter d'essai : il sera repris tel quel plus tard."""
+        await self.conn.execute(
+            "UPDATE moments SET locked = 0, attempts = MAX(attempts - 1, 0), error = ?, "
+            "updated_at = ? WHERE id = ?",
+            (reason, _now(), m.id),
+        )
+        await self.conn.commit()
+
     async def fail(self, m: Moment, error: str, max_attempts: int = 3) -> bool:
         """Relâche le job pour un nouvel essai, ou le marque FAILED après trop d'échecs.
 

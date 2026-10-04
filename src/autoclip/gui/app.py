@@ -103,7 +103,8 @@ SECTIONS = [
         ("max_clip_searches", "Recherches simultanées", "Moments dont on attend le clip en même temps", "int", None),
     ]),
     ("Claude", "🤖", [
-        ("anthropic_api_key", "Clé API", "platform.claude.com > API keys", "secret", None),
+        ("claude_backend", "Source Claude", "api = facturé à l'usage · subscription = ton abonnement via Claude Code", "choice", ["api", "subscription"]),
+        ("anthropic_api_key", "Clé API", "Seulement en mode api (platform.claude.com > API keys)", "secret", None),
         ("anthropic_workspace_id", "Workspace ID", "wrkspc_… (si la clé n'est rattachée à aucun workspace)", "text", None),
         ("claude_model", "Modèle (composition)", "Écrit la vidéo : le plus créatif est le meilleur choix", "combo", MODELS),
         ("decide_model", "Modèle (décision)", "Garder / couper. Vide = même modèle. Sonnet = 2x moins cher", "combo", ["", *MODELS]),

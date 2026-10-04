@@ -20,6 +20,7 @@ from .analysis.transcribe import transcribe
 from .config import Settings
 from .db import Database
 from .editor.claude import ClipComposer, ClipEditor
+from .editor.subscription import UsageLimitReached
 from .fetch.downloader import download_clip
 from .models import EditDecision, Moment, Platform, Status
 from .monitor.detector import SpikeDetector
@@ -55,6 +56,8 @@ class Pipeline:
         self.review = ReviewBot(settings, self.on_review)
         # login -> broadcaster_id, rempli à chaque rafraîchissement du top.
         self.twitch_ids: dict[str, str] = {}
+        # Abonnement Claude à sa limite : les étapes qui appellent Claude attendent cette heure.
+        self.claude_paused_until = 0.0
 
     def work_dir(self, m: Moment) -> Path:
         return self.s.work_dir / f"{m.id:06d}_{m.platform}_{m.channel}"
@@ -234,13 +237,21 @@ class Pipeline:
 
     # --- Boucle générique -------------------------------------------------------
 
-    async def worker(self, status: Status, step: Step, concurrency: int = 1) -> None:
+    async def worker(
+        self, status: Status, step: Step, concurrency: int = 1, uses_claude: bool = False
+    ) -> None:
         sem = asyncio.Semaphore(concurrency)
         tasks: set[asyncio.Task] = set()
 
         async def run(m: Moment) -> None:
             try:
                 await step(m)
+            except UsageLimitReached as e:
+                # Pas un échec : le moment garde son statut et sera repris à la réinitialisation.
+                self.claude_paused_until = max(self.claude_paused_until, e.resets_at)
+                reset = datetime.fromtimestamp(e.resets_at, UTC).astimezone().strftime("%H:%M")
+                log.warning("%s : moment #%d en pause jusqu'à %s", e, m.id, reset)
+                await self.db.pause(m, f"En pause : {e} (reprise vers {reset})")
             except Exception as e:
                 log.exception("Étape %s échouée pour le moment #%d", status, m.id)
                 if await self.db.fail(m, f"{type(e).__name__}: {e}"):
@@ -249,6 +260,9 @@ class Pipeline:
                 sem.release()
 
         while True:
+            if uses_claude and time.time() < self.claude_paused_until:
+                await asyncio.sleep(min(60, self.claude_paused_until - time.time() + 5))
+                continue
             await sem.acquire()
             m = await self.db.claim(status)
             if m is None:
@@ -276,8 +290,8 @@ class Pipeline:
                 self.worker(Status.DETECTED, self.step_get_clip, self.s.max_clip_searches),
                 self.worker(Status.CLIPPED, self.step_download),
                 self.worker(Status.DOWNLOADED, self.step_analyze),
-                self.worker(Status.ANALYZED, self.step_decide),
-                self.worker(Status.DECIDED, self.step_render),
+                self.worker(Status.ANALYZED, self.step_decide, uses_claude=True),
+                self.worker(Status.DECIDED, self.step_render, uses_claude=True),
             )
         finally:
             await self.http.aclose()
