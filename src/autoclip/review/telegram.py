@@ -21,6 +21,17 @@ log = logging.getLogger(__name__)
 # (moment_id, approuvé, étape "source" ou "final") -> True si appliqué
 DecisionCallback = Callable[[int, bool, str], Awaitable[bool]]
 
+# (commande sans le /) -> texte de réponse
+CommandCallback = Callable[[str], Awaitable[str]]
+
+COMMANDS = {
+    "statut": "État du pipeline",
+    "pause": "Met en pause la surveillance et les montages",
+    "reprendre": "Relance la surveillance et les montages",
+    "redemarrer": "Redémarre le pipeline (applique les nouveaux paramètres)",
+    "aide": "Liste des commandes",
+}
+
 ACTIONS = {
     "approve": (True, "final"), "reject": (False, "final"),
     "srcok": (True, "source"), "srcno": (False, "source"),
@@ -35,9 +46,12 @@ class TelegramError(Exception):
 
 
 class ReviewBot:
-    def __init__(self, settings: Settings, on_decision: DecisionCallback):
+    def __init__(self, settings: Settings, on_decision: DecisionCallback,
+                 on_command: CommandCallback | None = None):
         self.s = settings
         self.on_decision = on_decision
+        self.on_command = on_command
+        self.offset: int | None = None
         self._base = f"https://api.telegram.org/bot{settings.telegram_bot_token}"
         # Timeout plus long que le long polling, et large pour l'envoi des vidéos.
         self._http = httpx.AsyncClient(timeout=httpx.Timeout(POLL_TIMEOUT_S + 20, write=300))
@@ -100,23 +114,48 @@ class ReviewBot:
             )
 
     async def run(self) -> None:
-        """Écoute les clics sur les boutons (long polling) et transmet les décisions."""
-        offset = None
+        """Écoute les clics sur les boutons et les commandes (long polling)."""
+        try:
+            # Menu « / » de Telegram.
+            await self._call("setMyCommands", json={"commands": [
+                {"command": c, "description": d} for c, d in COMMANDS.items()]})
+        except TelegramError as e:
+            log.warning("Menu des commandes Telegram non enregistré : %s", e)
         while True:
             try:
                 updates = await self._call(
                     "getUpdates",
-                    json={"offset": offset, "timeout": POLL_TIMEOUT_S,
-                          "allowed_updates": ["callback_query"]},
+                    json={"offset": self.offset, "timeout": POLL_TIMEOUT_S,
+                          "allowed_updates": ["callback_query", "message"]},
                 )
                 for u in updates:
-                    offset = u["update_id"] + 1
+                    self.offset = u["update_id"] + 1
                     if "callback_query" in u:
                         await self._handle_click(u["callback_query"])
+                    elif "message" in u:
+                        await self._handle_message(u["message"])
             except Exception:
                 # TelegramError est levée sans chaînage : la trace ne contient pas le token.
                 log.exception("Telegram indisponible, nouvel essai dans 10 s")
                 await asyncio.sleep(10)
+
+    async def acknowledge(self) -> None:
+        """Confirme à Telegram les messages déjà lus (avant un redémarrage, sinon la commande
+        /redemarrer serait relue par le nouveau processus, en boucle)."""
+        if self.offset is not None:
+            await self._call("getUpdates", json={"offset": self.offset, "timeout": 0})
+
+    async def _handle_message(self, message: dict) -> None:
+        # Seul le chat de validation peut piloter le pipeline.
+        if str(message.get("chat", {}).get("id")) != str(self.s.telegram_chat_id):
+            return
+        text = (message.get("text") or "").strip()
+        if not text.startswith("/") or self.on_command is None:
+            return
+        command = text[1:].split()[0].split("@")[0].lower()  # « /pause@SQClip_bot » -> pause
+        if command not in COMMANDS:
+            command = "aide"
+        await self.send_text(await self.on_command(command))
 
     async def _handle_click(self, query: dict) -> None:
         message = query.get("message") or {}

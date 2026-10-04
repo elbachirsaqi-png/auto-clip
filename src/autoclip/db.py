@@ -165,6 +165,10 @@ class Database:
             return None
         return Moment(**{k: row[k] for k in row.keys() if k in Moment.model_fields})  # noqa: SIM118
 
+    async def status_counts(self) -> dict[str, int]:
+        async with self.conn.execute("SELECT status, count(*) FROM moments GROUP BY status") as cur:
+            return {row[0]: row[1] for row in await cur.fetchall()}
+
     async def statuses(self) -> dict[int, str]:
         async with self.conn.execute("SELECT id, status FROM moments") as cur:
             return {row["id"]: row["status"] for row in await cur.fetchall()}

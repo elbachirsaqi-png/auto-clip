@@ -7,8 +7,11 @@ au statut suivant. Un échec relâche le moment pour un nouvel essai (3 maximum)
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
+import subprocess
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -28,13 +31,16 @@ from .models import EditDecision, Moment, Platform, Status
 from .monitor.detector import SpikeDetector
 from .monitor.kick import KickAPI, KickChat
 from .monitor.twitch import TwitchAPI, TwitchChat
+from .procutil import PID_FILE
 from .publish.kit import build_kit, description, tiktok_caption
 from .render.hyperframes import LintError, Renderer, build_segments, remap_words
-from .review.telegram import ReviewBot
+from .review.telegram import COMMANDS, ReviewBot
 
 log = logging.getLogger(__name__)
 
 WINDOW_S = 10  # taille d'une fenêtre d'activité du chat
+# Présent = pipeline en pause (/pause sur Telegram) ; survit à un redémarrage.
+PAUSE_FILE = Path("data/paused")
 IDLE_SLEEP_S = 3
 
 Step = Callable[[Moment], Awaitable[None]]
@@ -65,7 +71,8 @@ class Pipeline:
         self.editor = ClipEditor(settings)
         self.composer = ClipComposer(settings)
         self.renderer = Renderer(settings.max_parallel_renders, settings.render_quality)
-        self.review = ReviewBot(settings, self.on_review)
+        self.review = ReviewBot(settings, self.on_review, self.on_command)
+        self.started_at = time.time()
         # login -> broadcaster_id / catégorie, remplis à chaque rafraîchissement.
         self.twitch_ids: dict[str, str] = {}
         self.twitch_games: dict[str, str] = {}
@@ -130,6 +137,72 @@ class Pipeline:
 
     # --- Surveillance ---------------------------------------------------------
 
+    @property
+    def paused(self) -> bool:
+        return PAUSE_FILE.exists()
+
+    async def on_command(self, command: str) -> str:
+        """Commandes Telegram : /statut, /pause, /reprendre, /redemarrer, /aide."""
+        if command == "pause":
+            if self.paused:
+                return "⏸ Déjà en pause. /reprendre pour relancer."
+            PAUSE_FILE.write_text(datetime.now(UTC).isoformat())
+            self.twitch_chat.set_channels(set())
+            self.kick_chat.set_channels(set())
+            log.info("Pipeline mis en pause depuis Telegram")
+            return ("⏸ Pause : plus de surveillance ni de nouveau montage.\n"
+                    "Un rendu déjà commencé se termine. Les boutons des vidéos reçues marchent "
+                    "toujours.\n/reprendre pour relancer.")
+        if command == "reprendre":
+            if not self.paused:
+                return "▶ Le pipeline tourne déjà."
+            PAUSE_FILE.unlink(missing_ok=True)
+            log.info("Pipeline relancé depuis Telegram")
+            return "▶ C'est reparti : surveillance et montages relancés (chats rejoints sous 1 min)."
+        if command == "redemarrer":
+            asyncio.get_running_loop().call_later(1, lambda: asyncio.ensure_future(self.restart()))
+            return "🔄 Redémarrage du pipeline… (environ 30 s)"
+        if command == "statut":
+            return await self.status_text()
+        return "Commandes :\n" + "\n".join(f"/{c} — {d}" for c, d in COMMANDS.items())
+
+    async def status_text(self) -> str:
+        counts = await self.db.status_counts()
+        uptime = int(time.time() - self.started_at) // 60
+        state = "⏸ En pause" if self.paused else "▶ En marche"
+        if time.time() < self.claude_paused_until:
+            reset = datetime.fromtimestamp(self.claude_paused_until, UTC).astimezone()
+            state += f" · montages en attente de Claude jusqu'à {reset:%H:%M}"
+        twitch = len(self.twitch_ids)
+        kick = len(self.kick_games) if self.kick.enabled else 0
+        waiting = counts.get("source_pending", 0) + counts.get("pending_review", 0)
+        in_progress = sum(counts.get(s, 0) for s in
+                          ("source_approved", "analyzed", "decided", "rendered"))
+        return (f"{state} depuis {uptime // 60} h {uptime % 60:02d}\n"
+                f"Surveillés : {twitch} Twitch · {kick} Kick\n"
+                f"À valider sur Telegram : {waiting}\n"
+                f"En cours de montage : {in_progress}\n"
+                f"Vidéos approuvées : {counts.get('approved', 0)}")
+
+    async def restart(self) -> None:
+        """Relance un nouveau pipeline puis arrête celui-ci (et ses rendus en cours)."""
+        log.info("Redémarrage demandé depuis Telegram")
+        try:
+            await self.review.acknowledge()
+        except Exception:  # noqa: BLE001  (au pire, la commande sera relue une fois)
+            log.warning("Impossible de confirmer les messages Telegram avant le redémarrage")
+        PID_FILE.unlink(missing_ok=True)  # sinon le nouveau croirait le pipeline déjà lancé
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        subprocess.Popen([sys.executable, "-m", "autoclip"], cwd=os.getcwd(),  # noqa: ASYNC220  (on quitte juste après)
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+        if sys.platform == "win32":
+            # /T : arrête aussi les rendus (Node, Chrome) lancés par ce processus.
+            subprocess.run(["taskkill", "/PID", str(os.getpid()), "/T", "/F"],  # noqa: ASYNC221
+                           capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                           check=False)
+        os._exit(0)
+
     def watched_channels(self, key: str = "WATCH_CHANNELS") -> list[str]:
         """Liste relue dans le .env à chaque fois : modifiable depuis l'application sans redémarrer."""
         default = self.s.watch_channels if key == "WATCH_CHANNELS" else self.s.kick_watch_channels
@@ -138,6 +211,10 @@ class Pipeline:
 
     async def refresh_kick_streams(self) -> None:
         while True:
+            if self.paused:
+                self.kick_chat.set_channels(set())
+                await asyncio.sleep(5)
+                continue
             try:
                 streams = []
                 if self.s.kick_include_top:
@@ -153,6 +230,10 @@ class Pipeline:
 
     async def refresh_top_streams(self) -> None:
         while True:
+            if self.paused:
+                self.twitch_chat.set_channels(set())
+                await asyncio.sleep(5)
+                continue
             try:
                 streams = []
                 if self.s.include_top_streams:
@@ -179,6 +260,8 @@ class Pipeline:
             sources = [(Platform.TWITCH, self.twitch_chat.drain(), self.twitch_games)]
             if self.kick.enabled:
                 sources.append((Platform.KICK, self.kick_chat.drain(), self.kick_games))
+            if self.paused:
+                continue
             for platform, activities, games in sources:
                 for channel, activity in activities.items():
                     # Moyenne propre à chaque plateforme : un même pseudo peut exister des deux côtés.
@@ -384,6 +467,9 @@ class Pipeline:
                 sem.release()
 
         while True:
+            if self.paused:
+                await asyncio.sleep(IDLE_SLEEP_S)
+                continue
             if uses_claude and time.time() < self.claude_paused_until:
                 await asyncio.sleep(min(60, self.claude_paused_until - time.time() + 5))
                 continue
@@ -400,6 +486,8 @@ class Pipeline:
     async def run(self) -> None:
         await self.db.connect()
         await self.cleanup_work_dirs()
+        if self.paused:
+            log.info("Démarrage en pause (/reprendre sur Telegram pour relancer)")
         kick_tasks = []
         if self.kick.enabled:
             kick_tasks = [self.kick_chat.run(), self.refresh_kick_streams()]

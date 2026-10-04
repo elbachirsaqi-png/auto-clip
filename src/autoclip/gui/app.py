@@ -809,7 +809,11 @@ class App(ctk.CTk):
     def tick(self):
         """Toutes les 2 s : état du pipeline et page affichée (sauf formulaires)."""
         pid = running_pid(ROOT)
-        if pid:
+        if pid and (ROOT / "data/paused").exists():
+            # Mis en pause avec /pause sur Telegram : le processus tourne, mais ne surveille plus.
+            self.status_label.configure(text="● En pause  (/reprendre)", text_color=AMBER)
+            self.toggle_btn.configure(text="■  Arrêter", fg_color=RED, hover_color="#E04866")
+        elif pid:
             self.status_label.configure(text=f"● En marche  (PID {pid})", text_color=GREEN)
             self.toggle_btn.configure(text="■  Arrêter", fg_color=RED, hover_color="#E04866")
         else:
