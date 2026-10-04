@@ -36,4 +36,14 @@ def test_build_kit_moves_video_and_writes_text(tmp_path, monkeypatch):
     assert not video.exists() and mp4.read_bytes() == b"mp4"
     assert "_000061_xqc_Bad title" in mp4.name
     content = txt.read_text(encoding="utf-8")
-    assert content.startswith('TITRE\nBad: "title"?') and "DESCRIPTION" in content
+    assert content.startswith('===== YOUTUBE =====\nTITRE\nBad: "title"?')
+    assert "DESCRIPTION" in content and "===== TIKTOK =====\nLÉGENDE\n" in content
+
+
+def test_tiktok_caption_drops_shorts_and_caps_hashtags():
+    d = decision(hashtags=["#a", "#b", "#c", "#d", "#e", "#f"])
+    caption = kit.tiktok_caption(d, MOMENT)
+    first_line, *_, tags = caption.splitlines()
+    assert first_line == d.title
+    assert "#Shorts" not in caption
+    assert tags.split() == ["#xqc", "#a", "#b", "#c", "#d"]

@@ -1,4 +1,4 @@
-"""Kit de publication manuelle : la vidéo + un fichier texte prêt à copier dans YouTube Studio.
+"""Kit de publication manuelle : la vidéo + les textes à copier dans YouTube Studio et TikTok.
 
 Rien n'est publié automatiquement : tu postes toi-même. Le titre est vérifié avec le linter
 de /yt-package (youtube-agent-skill de Jake Schincariol, licence MIT), repris ci-dessous.
@@ -83,6 +83,19 @@ def description(decision: EditDecision, m: Moment) -> str:
     return f"{body}\n\n{credit}\n\n{' '.join(hashtags(decision))}"
 
 
+def tiktok_caption(decision: EditDecision, m: Moment) -> str:
+    """Légende TikTok : pas de titre séparé, seule la première ligne s'affiche avant « plus ».
+
+    On ouvre donc sur le titre, puis le crédit, puis 5 hashtags au plus (sans #Shorts, propre à
+    YouTube) : au-delà, TikTok n'en tient pas compte et ça fait spam.
+    """
+    tags = [t for t in hashtags(decision) if t.lower() != "#shorts"][:5]
+    if not any(t.lower().lstrip("#") == m.channel.lower() for t in tags):
+        tags = [f"#{m.channel}", *tags][:5]
+    credit = f"🎥 {m.channel} ({m.platform.capitalize()})"
+    return f"{decision.title}\n\n{credit}\n\n{' '.join(tags)}"[:2200]
+
+
 def build_kit(m: Moment, decision: EditDecision, video: Path) -> tuple[Path, Path]:
     """Déplace la vidéo dans data/a_publier/ et écrit le fichier texte à côté."""
     PUBLISH_DIR.mkdir(parents=True, exist_ok=True)
@@ -93,8 +106,9 @@ def build_kit(m: Moment, decision: EditDecision, video: Path) -> tuple[Path, Pat
     lint = lint_title(decision.title, decision.hook)
     report = "\n".join([f"  ✗ {i}" for i in lint["issues"]] + [f"  ✓ {g}" for g in lint["good"]])
     text = (
-        f"TITRE\n{decision.title}\n\n"
+        f"===== YOUTUBE =====\nTITRE\n{decision.title}\n\n"
         f"DESCRIPTION\n{description(decision, m)}\n\n"
+        f"===== TIKTOK =====\nLÉGENDE\n{tiktok_caption(decision, m)}\n\n"
         f"----\nVérification du titre : {lint['score']}/100\n{report}\n"
         f"Streamer : {m.channel} ({m.platform}) · catégorie : {m.category or '?'}\n"
     )

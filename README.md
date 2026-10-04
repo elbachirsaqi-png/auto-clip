@@ -28,7 +28,7 @@ detected -> clipped -> downloaded -> analyzed -> decided -> rendered
 | Composition écrite par Claude | `editor/claude.py`, `editor/compose_prompt.md` | fait |
 | Lint + rendu | `render/hyperframes.py` | fait |
 | Validation Telegram | `review/telegram.py` | fait (boutons Publier / Rejeter) |
-| Kit de publication (tu publies toi-même) | `publish/kit.py` | fait : `data/a_publier/` + textes sur Telegram |
+| Kit de publication YouTube + TikTok (tu publies toi-même) | `publish/kit.py` | fait : `data/a_publier/` + textes sur Telegram |
 | Kick | `monitor/kick.py` | à faire |
 
 ## Installation
@@ -78,7 +78,5 @@ Ajuste ensuite `SPIKE_RATIO` et les paramètres de `SpikeDetector`.
 - **Disque** : les dossiers des moments rejetés (par Claude ou sur Telegram) ou abandonnés sont supprimés automatiquement ; après validation, seul `final.mp4` est gardé.
 - **Coût Claude** : chaque appel est loggé avec son coût estimé (`Claude décision : ... ≈ $0.0xx`).
 
-- **Quota YouTube** : environ 6 uploads par jour par défaut ; vidéos privées tant que l'app n'est pas auditée.
-- **TikTok** : publication en privé (`SELF_ONLY`) tant que l'app n'est pas auditée.
 - **Droits** : travaille avec l'accord des streamers et apporte une vraie valeur éditoriale.
 - **RAM** : `MAX_PARALLEL_RENDERS=1` par défaut, car Chrome headless consomme beaucoup.

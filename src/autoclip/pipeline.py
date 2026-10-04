@@ -28,7 +28,7 @@ from .models import EditDecision, Moment, Platform, Status
 from .monitor.detector import SpikeDetector
 from .monitor.kick import KickAPI, KickChat
 from .monitor.twitch import TwitchAPI, TwitchChat
-from .publish.kit import build_kit, description
+from .publish.kit import build_kit, description, tiktok_caption
 from .render.hyperframes import LintError, Renderer, build_segments, remap_words
 from .review.telegram import ReviewBot
 
@@ -344,9 +344,11 @@ class Pipeline:
         self.discard_files(moment_id)  # la vidéo est dans le kit, le reste ne sert plus
         log.info("Kit de publication prêt : %s", video.name)
         # Deux messages séparés : un appui long pour copier chacun dans YouTube Studio.
-        await self.review.send_text(f"📋 À publier (#{moment_id}) · titre :")
+        await self.review.send_text(f"📋 À publier (#{moment_id}) · YouTube : titre puis description")
         await self.review.send_text(decision.title)
         await self.review.send_text(description(decision, m))
+        await self.review.send_text("🎵 TikTok : légende")
+        await self.review.send_text(tiktok_caption(decision, m))
         await self.review.send_text(f"📁 Sur le PC : data/a_publier/{video.name}")
 
     # --- Boucle générique -------------------------------------------------------
