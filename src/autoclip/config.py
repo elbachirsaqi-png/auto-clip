@@ -12,6 +12,12 @@ class Settings(BaseSettings):
 
     kick_client_id: str = ""
     kick_client_secret: str = ""
+    # Kick est surveillé si activé et si les identifiants sont remplis.
+    kick_enabled: bool = True
+    kick_include_top: bool = True
+    kick_top_n: int = 10
+    # Chaînes Kick toujours surveillées quand elles sont en live, séparées par des virgules.
+    kick_watch_channels: str = ""
 
     # api = clé API facturée à l'usage ; subscription = abonnement Claude via Claude Code (claude -p).
     claude_backend: str = "api"

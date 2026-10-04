@@ -26,6 +26,7 @@ from .fetch.downloader import download_clip
 from .gui.envfile import read_env
 from .models import EditDecision, Moment, Platform, Status
 from .monitor.detector import SpikeDetector
+from .monitor.kick import KickAPI, KickChat
 from .monitor.twitch import TwitchAPI, TwitchChat
 from .render.hyperframes import LintError, Renderer, build_segments, remap_words
 from .review.telegram import ReviewBot
@@ -51,6 +52,8 @@ class Pipeline:
         self.http = httpx.AsyncClient(timeout=20)
         self.twitch = TwitchAPI(settings, self.http)
         self.twitch_chat = TwitchChat()
+        self.kick = KickAPI(settings, self.http)
+        self.kick_chat = KickChat(self.kick)
         self.detector = SpikeDetector(
             ratio=settings.spike_ratio,
             cooldown_s=settings.dedup_window_s,
@@ -65,6 +68,7 @@ class Pipeline:
         # login -> broadcaster_id / catégorie, remplis à chaque rafraîchissement.
         self.twitch_ids: dict[str, str] = {}
         self.twitch_games: dict[str, str] = {}
+        self.kick_games: dict[str, str] = {}
         # Abonnement Claude à sa limite : les étapes qui appellent Claude attendent cette heure.
         self.claude_paused_until = 0.0
 
@@ -125,10 +129,26 @@ class Pipeline:
 
     # --- Surveillance ---------------------------------------------------------
 
-    def watched_channels(self) -> list[str]:
+    def watched_channels(self, key: str = "WATCH_CHANNELS") -> list[str]:
         """Liste relue dans le .env à chaque fois : modifiable depuis l'application sans redémarrer."""
-        raw = read_env(Path(".env")).get("WATCH_CHANNELS", self.s.watch_channels)
+        default = self.s.watch_channels if key == "WATCH_CHANNELS" else self.s.kick_watch_channels
+        raw = read_env(Path(".env")).get(key, default)
         return sorted({c.strip().lower() for c in raw.split(",") if c.strip()})
+
+    async def refresh_kick_streams(self) -> None:
+        while True:
+            try:
+                streams = []
+                if self.s.kick_include_top:
+                    streams += await self.kick.top_streams(self.s.kick_top_n, self.s.stream_language)
+                watched = self.watched_channels("KICK_WATCH_CHANNELS")
+                streams += await self.kick.live_streams(watched) if watched else []
+                self.kick_games = {s["slug"]: s["game_name"] for s in streams}
+                self.kick_chat.set_channels(set(self.kick_games))
+                log.info("Kick surveillé : %s", ", ".join(self.kick_games) or "aucun stream en live")
+            except Exception:
+                log.exception("Impossible de récupérer les streams Kick")
+            await asyncio.sleep(self.s.poll_interval_s)
 
     async def refresh_top_streams(self) -> None:
         while True:
@@ -155,37 +175,53 @@ class Pipeline:
         while True:
             await asyncio.sleep(WINDOW_S)
             now = time.time()
-            for channel, activity in self.twitch_chat.drain().items():
-                score = self.detector.update(channel, activity, now)
-                if score is None:
-                    continue
-                m = Moment(
-                    platform=Platform.TWITCH,
-                    channel=channel,
-                    category=self.twitch_games.get(channel) or None,
-                    detected_at=datetime.now(UTC),
-                    score=score,
-                )
-                m.id = await self.db.insert_moment(m)
-                log.info("Moment fort #%d sur %s · %s (x%.1f)", m.id, channel,
-                         m.category or "?", score)
+            sources = [(Platform.TWITCH, self.twitch_chat.drain(), self.twitch_games)]
+            if self.kick.enabled:
+                sources.append((Platform.KICK, self.kick_chat.drain(), self.kick_games))
+            for platform, activities, games in sources:
+                for channel, activity in activities.items():
+                    # Moyenne propre à chaque plateforme : un même pseudo peut exister des deux côtés.
+                    key = channel if platform == Platform.TWITCH else f"kick:{channel}"
+                    score = self.detector.update(key, activity, now)
+                    if score is None:
+                        continue
+                    m = Moment(
+                        platform=platform,
+                        channel=channel,
+                        category=games.get(channel) or None,
+                        detected_at=datetime.now(UTC),
+                        score=score,
+                    )
+                    m.id = await self.db.insert_moment(m)
+                    log.info("Moment fort #%d sur %s %s · %s (x%.1f)", m.id, platform, channel,
+                             m.category or "?", score)
 
     # --- Étapes ---------------------------------------------------------------
 
     async def step_get_clip(self, m: Moment) -> None:
-        # Absente du top en mémoire (redémarrage, streamer sorti du top) : on demande à Twitch.
-        broadcaster_id = self.twitch_ids.get(m.channel) or await self.twitch.user_id(m.channel)
-        if self.s.auto_create_clips:
-            url = await self.twitch.create_clip(broadcaster_id)
+        if m.platform == Platform.KICK:
+            # Kick ne permet pas de créer des clips par API : on attend ceux des viewers.
+            async def find():
+                return await self.kick.find_clip_for_moment(m.channel, m.detected_at)
         else:
-            url = None
-            max_wait = self.s.clip_max_wait_s
-            while url is None:
-                elapsed = (datetime.now(UTC) - m.detected_at).total_seconds()
-                if elapsed >= max_wait:
-                    raise RuntimeError(f"Aucun clip créé par les viewers en {max_wait} s")
-                await asyncio.sleep(min(self.s.clip_poll_s, max_wait - elapsed))
-                url = await self.twitch.find_clip_for_moment(broadcaster_id, m.detected_at)
+            # Absente du top en mémoire (redémarrage, sortie du top) : on demande à Twitch.
+            broadcaster_id = self.twitch_ids.get(m.channel) or await self.twitch.user_id(m.channel)
+            if self.s.auto_create_clips:
+                url = await self.twitch.create_clip(broadcaster_id)
+                await self.db.advance(m, Status.CLIPPED, clip_url=url)
+                return
+
+            async def find():
+                return await self.twitch.find_clip_for_moment(broadcaster_id, m.detected_at)
+
+        url = None
+        max_wait = self.s.clip_max_wait_s
+        while url is None:
+            elapsed = (datetime.now(UTC) - m.detected_at).total_seconds()
+            if elapsed >= max_wait:
+                raise RuntimeError(f"Aucun clip créé par les viewers en {max_wait} s")
+            await asyncio.sleep(min(self.s.clip_poll_s, max_wait - elapsed))
+            url = await find()
         await self.db.advance(m, Status.CLIPPED, clip_url=url)
 
     async def step_download(self, m: Moment) -> None:
@@ -336,6 +372,11 @@ class Pipeline:
     async def run(self) -> None:
         await self.db.connect()
         await self.cleanup_work_dirs()
+        kick_tasks = []
+        if self.kick.enabled:
+            kick_tasks = [self.kick_chat.run(), self.refresh_kick_streams()]
+        else:
+            log.info("Kick désactivé (identifiants absents ou KICK_ENABLED=false)")
         review_tasks = []
         if self.review.enabled:
             review_tasks = [self.review.run(), self.worker(Status.RENDERED, self.step_review)]
@@ -344,6 +385,7 @@ class Pipeline:
         try:
             await asyncio.gather(
                 *review_tasks,
+                *kick_tasks,
                 self.twitch_chat.run(),
                 self.refresh_top_streams(),
                 self.detect_loop(),

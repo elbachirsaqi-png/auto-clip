@@ -128,9 +128,12 @@ SECTIONS = [
         ("render_quality", "Qualité du rendu", "draft = rapide, delivery = meilleure qualité", "choice", ["draft", "looks", "delivery"]),
         ("max_parallel_renders", "Rendus simultanés", "Chaque rendu lance un Chrome : 1 ou 2 maximum", "int", None),
     ]),
-    ("Kick (bientôt)", "🟩", [
-        ("kick_client_id", "Client ID", "Pas encore utilisé par le pipeline", "text", None),
-        ("kick_client_secret", "Client secret", "Pas encore utilisé par le pipeline", "secret", None),
+    ("Kick", "🟩", [
+        ("kick_enabled", "Surveiller Kick", "Active Kick si les identifiants sont remplis", "bool", None),
+        ("kick_client_id", "Client ID", "kick.com > Paramètres > Développeur > ton application", "text", None),
+        ("kick_client_secret", "Client secret", "Secret de l'application Kick", "secret", None),
+        ("kick_include_top", "Surveiller le top Kick", "En plus des chaînes de ta liste (page Streamers)", "bool", None),
+        ("kick_top_n", "Taille du top Kick", "Nombre de plus gros lives Kick suivis", "int", None),
     ]),
 ]
 
@@ -413,11 +416,21 @@ class PromptsPage(ctk.CTkFrame):
         self.app.settings_saved("Prompts enregistrés")
 
 
-LOGIN_RE = re.compile(r"^[a-zA-Z0-9_]{3,25}$")
+LOGIN_RE = re.compile(r"^[a-zA-Z0-9_-]{3,25}$")
+
+# Plateforme -> (clé .env de la liste, clé .env du top, libellé, couleur, URL de la chaîne)
+PLATFORMS = {
+    "twitch": ("WATCH_CHANNELS", "INCLUDE_TOP_STREAMS", "Twitch", "#9146FF", "https://twitch.tv/{}"),
+    "kick": ("KICK_WATCH_CHANNELS", "KICK_INCLUDE_TOP", "Kick", "#53FC18", "https://kick.com/{}"),
+}
+
+
+def _env_bool(env: dict, key: str, field: str) -> bool:
+    return env.get(key, default_of(field)).strip().lower() in ("1", "true", "yes", "on")
 
 
 class StreamersPage(ctk.CTkFrame):
-    """Streamers toujours surveillés quand ils sont en live, même hors du top."""
+    """Streamers Twitch et Kick toujours surveillés quand ils sont en live, même hors du top."""
 
     def __init__(self, master, app):
         super().__init__(master, fg_color="transparent")
@@ -430,116 +443,135 @@ class StreamersPage(ctk.CTkFrame):
 
         add = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14, border_width=1, border_color=BORDER)
         add.pack(fill="x", padx=34, pady=(0, 12))
-        self.entry = ctk.CTkEntry(add, placeholder_text="Pseudo Twitch ou lien (ex. kaicenat, twitch.tv/xqc)",
+        self.platform = tk.StringVar(value="Twitch")
+        ctk.CTkSegmentedButton(add, values=["Twitch", "Kick"], variable=self.platform, height=38,
+                               font=font(13, "bold"), selected_color=ACCENT,
+                               selected_hover_color=ACCENT_HOVER).pack(side="left", padx=(16, 8), pady=14)
+        self.entry = ctk.CTkEntry(add, placeholder_text="Pseudo ou lien (ex. kaicenat, twitch.tv/xqc, kick.com/adinross)",
                                   height=38, font=font(13), fg_color=PANEL, border_color=BORDER)
-        self.entry.pack(side="left", fill="x", expand=True, padx=(16, 8), pady=14)
+        self.entry.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=14)
         self.entry.bind("<Return>", lambda _e: self.add())
         ctk.CTkButton(add, text="+  Ajouter", width=120, height=38, font=font(13, "bold"),
                       fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.add).pack(side="left", padx=(0, 16))
 
         opts = ctk.CTkFrame(self, fg_color="transparent")
         opts.pack(fill="x", padx=40, pady=(0, 8))
-        self.include_top = tk.BooleanVar()
-        ctk.CTkSwitch(opts, text="Surveiller aussi le top Twitch", variable=self.include_top,
-                      progress_color=ACCENT, font=font(13), command=self.save_top).pack(side="left")
+        self.include_top = {p: tk.BooleanVar() for p in PLATFORMS}
+        for p, (_, _, label, _, _) in PLATFORMS.items():
+            ctk.CTkSwitch(opts, text=f"Top {label}", variable=self.include_top[p], progress_color=ACCENT,
+                          font=font(13), command=lambda pl=p: self.save_top(pl)).pack(side="left", padx=(0, 24))
         self.count = ctk.CTkLabel(opts, text="", font=font(12), text_color=MUTED)
         self.count.pack(side="right")
 
         self.list = ctk.CTkScrollableFrame(self, fg_color=CARD, corner_radius=14, border_width=1,
                                            border_color=BORDER)
         self.list.pack(fill="both", expand=True, padx=34, pady=(0, 24))
-        self.channels: list[str] = []
-        self.live: dict[str, dict] = {}
+        self.channels: dict[str, list[str]] = {p: [] for p in PLATFORMS}
+        self.live: dict[str, dict[str, dict]] = {}  # plateforme -> slug -> infos (vide = pas vérifié)
 
     def load(self):
         env = read_env(ENV_FILE)
-        raw = env.get("WATCH_CHANNELS", default_of("watch_channels"))
-        self.channels = sorted({c.strip().lower() for c in raw.split(",") if c.strip()})
-        self.include_top.set(env.get("INCLUDE_TOP_STREAMS", default_of("include_top_streams"))
-                             .lower() in ("1", "true", "yes", "on"))
+        for p, (list_key, top_key, _, _, _) in PLATFORMS.items():
+            raw = env.get(list_key, default_of(list_key.lower()))
+            self.channels[p] = sorted({c.strip().lower() for c in raw.split(",") if c.strip()})
+            self.include_top[p].set(_env_bool(env, top_key, top_key.lower()))
         self.render()
 
     def render(self):
         for w in self.list.winfo_children():
             w.destroy()
-        n_live = sum(1 for c in self.channels if c in self.live)
-        self.count.configure(text=f"{len(self.channels)} streamer(s)"
-                             + (f" · {n_live} en live" if self.live else ""))
-        if not self.channels:
-            ctk.CTkLabel(self.list, text="Aucun streamer : ajoute un pseudo Twitch ci-dessus.",
+        total = sum(len(v) for v in self.channels.values())
+        n_live = sum(1 for p, chans in self.channels.items() for c in chans if c in self.live.get(p, {}))
+        self.count.configure(text=f"{total} streamer(s)" + (f" · {n_live} en live" if self.live else ""))
+        if not total:
+            ctk.CTkLabel(self.list, text="Aucun streamer : choisis Twitch ou Kick et ajoute un pseudo ci-dessus.",
                          font=font(13), text_color=MUTED).pack(pady=40)
             return
-        for c in self.channels:
-            row = ctk.CTkFrame(self.list, fg_color=PANEL, corner_radius=10, height=52)
-            row.pack(fill="x", padx=8, pady=4)
-            info = self.live.get(c)
-            dot = GREEN if info else (MUTED if self.live else BORDER)
-            ctk.CTkLabel(row, text="●", font=font(16), text_color=dot, width=28).pack(side="left", padx=(12, 4))
-            ctk.CTkLabel(row, text=c, font=font(14, "bold")).pack(side="left", pady=12)
-            if info:
-                detail = f"{info.get('game_name') or '?'} · {info.get('viewer_count', 0):,} viewers".replace(",", " ")
-            elif self.live:
-                detail = "hors ligne"
-            else:
-                detail = ""
-            ctk.CTkLabel(row, text=detail, font=font(12), text_color=MUTED).pack(side="left", padx=14)
-            ctk.CTkButton(row, text="Retirer", width=80, height=30, font=font(12), fg_color=CARD,
-                          hover_color=RED, command=lambda ch=c: self.remove(ch)).pack(side="right", padx=10)
-            ctk.CTkButton(row, text="Ouvrir", width=70, height=30, font=font(12), fg_color=CARD,
-                          hover_color=BORDER,
-                          command=lambda ch=c: os.startfile(f"https://twitch.tv/{ch}")).pack(side="right")
+        for p, chans in self.channels.items():
+            _, _, label, color, url = PLATFORMS[p]
+            for c in chans:
+                row = ctk.CTkFrame(self.list, fg_color=PANEL, corner_radius=10, height=52)
+                row.pack(fill="x", padx=8, pady=4)
+                info = self.live.get(p, {}).get(c)
+                checked = p in self.live
+                dot = GREEN if info else (MUTED if checked else BORDER)
+                ctk.CTkLabel(row, text="●", font=font(16), text_color=dot, width=28).pack(side="left", padx=(12, 4))
+                ctk.CTkLabel(row, text=f" {label} ", font=font(11, "bold"), text_color=BG, fg_color=color,
+                             corner_radius=6).pack(side="left", padx=(0, 10))
+                ctk.CTkLabel(row, text=c, font=font(14, "bold")).pack(side="left", pady=12)
+                if info:
+                    detail = f"{info.get('game_name') or '?'} · {info.get('viewer_count', 0):,} viewers".replace(",", " ")
+                else:
+                    detail = "hors ligne" if checked else ""
+                ctk.CTkLabel(row, text=detail, font=font(12), text_color=MUTED).pack(side="left", padx=14)
+                ctk.CTkButton(row, text="Retirer", width=80, height=30, font=font(12), fg_color=CARD,
+                              hover_color=RED, command=lambda pl=p, ch=c: self.remove(pl, ch)).pack(side="right", padx=10)
+                channel_url = url.format(c)
+                ctk.CTkButton(row, text="Ouvrir", width=70, height=30, font=font(12), fg_color=CARD,
+                              hover_color=BORDER,
+                              command=lambda u=channel_url: os.startfile(u)).pack(side="right")
 
     def add(self):
         raw = self.entry.get().strip().rstrip("/")
+        platform = self.platform.get().lower()
+        if "kick.com/" in raw:
+            platform = "kick"
+        elif "twitch.tv/" in raw:
+            platform = "twitch"
         login = raw.rsplit("/", 1)[-1].lstrip("@").lower()
         if not LOGIN_RE.match(login):
-            self.app.toast.show("Pseudo Twitch invalide (3 à 25 lettres, chiffres ou _)", RED)
+            self.app.toast.show("Pseudo invalide (3 à 25 lettres, chiffres, _ ou -)", RED)
             return
-        if login in self.channels:
-            self.app.toast.show(f"{login} est déjà dans la liste", AMBER)
+        label = PLATFORMS[platform][2]
+        if login in self.channels[platform]:
+            self.app.toast.show(f"{login} ({label}) est déjà dans la liste", AMBER)
             return
-        self.channels = sorted([*self.channels, login])
+        self.channels[platform] = sorted([*self.channels[platform], login])
         self.entry.delete(0, "end")
-        self.save(f"{login} ajouté")
+        self.save(platform, f"{login} ({label}) ajouté")
 
-    def remove(self, login: str):
-        self.channels = [c for c in self.channels if c != login]
-        self.save(f"{login} retiré")
+    def remove(self, platform: str, login: str):
+        self.channels[platform] = [c for c in self.channels[platform] if c != login]
+        self.save(platform, f"{login} retiré")
 
-    def save(self, message: str):
-        write_env(ENV_FILE, {"WATCH_CHANNELS": ",".join(self.channels)})
+    def save(self, platform: str, message: str):
+        write_env(ENV_FILE, {PLATFORMS[platform][0]: ",".join(self.channels[platform])})
         self.render()
-        # Le pipeline relit la liste à chaque rafraîchissement : pas besoin de redémarrer.
+        # Le pipeline relit les listes à chaque rafraîchissement : pas besoin de redémarrer.
         self.app.toast.show(f"{message} · pris en compte sous 1 minute")
 
-    def save_top(self):
-        write_env(ENV_FILE, {"INCLUDE_TOP_STREAMS": "true" if self.include_top.get() else "false"})
-        self.app.settings_saved("Surveillance du top modifiée")
+    def save_top(self, platform: str):
+        key = PLATFORMS[platform][1]
+        write_env(ENV_FILE, {key: "true" if self.include_top[platform].get() else "false"})
+        self.app.settings_saved(f"Top {PLATFORMS[platform][2]} modifié")
 
     def check_live(self):
-        if not self.channels:
+        if not any(self.channels.values()):
             return
         self.check_btn.configure(state="disabled", text="Vérification…")
         threading.Thread(target=self._check_thread, daemon=True).start()
 
     def _check_thread(self):
-        try:
-            live = fetch_live(self.channels)
-            self.after(0, lambda: self._checked(live, None))
-        except Exception as e:  # noqa: BLE001  (réseau, identifiants Twitch…)
-            self.after(0, lambda err=e: self._checked(None, err))
+        live, errors = {}, []
+        for p, fetch in (("twitch", fetch_live_twitch), ("kick", fetch_live_kick)):
+            if not self.channels[p]:
+                continue
+            try:
+                live[p] = fetch(self.channels[p])
+            except Exception as e:  # noqa: BLE001  (réseau, identifiants…)
+                errors.append(f"{PLATFORMS[p][2]} : {type(e).__name__}")
+        self.after(0, lambda: self._checked(live, errors))
 
-    def _checked(self, live, error):
+    def _checked(self, live, errors):
         self.check_btn.configure(state="normal", text="⟳  Vérifier qui est en live")
-        if error is not None:
-            self.app.toast.show(f"Twitch injoignable : {type(error).__name__}", RED)
-            return
+        if errors:
+            self.app.toast.show("Injoignable — " + ", ".join(errors), RED)
         self.live = live
         self.render()
 
 
-def fetch_live(logins: list[str]) -> dict[str, dict]:
-    """Streams en direct parmi `logins`, avec les identifiants Twitch du .env."""
+def fetch_live_twitch(logins: list[str]) -> dict[str, dict]:
+    """Streams Twitch en direct parmi `logins`, avec les identifiants du .env."""
     import httpx
 
     env = read_env(ENV_FILE)
@@ -555,6 +587,33 @@ def fetch_live(logins: list[str]) -> dict[str, dict]:
                          params={"user_login": logins[i:i + 100], "first": 100})
             r.raise_for_status()
             out.update({st["user_login"].lower(): st for st in r.json()["data"]})
+    return out
+
+
+def fetch_live_kick(slugs: list[str]) -> dict[str, dict]:
+    """Chaînes Kick en direct parmi `slugs`, avec les identifiants du .env."""
+    import httpx
+
+    env = read_env(ENV_FILE)
+    with httpx.Client(timeout=15) as http:
+        token = http.post("https://id.kick.com/oauth/token", data={
+            "grant_type": "client_credentials",
+            "client_id": env.get("KICK_CLIENT_ID", ""),
+            "client_secret": env.get("KICK_CLIENT_SECRET", "")})
+        token.raise_for_status()
+        headers = {"Authorization": f"Bearer {token.json()['access_token']}"}
+        out = {}
+        for i in range(0, len(slugs), 50):
+            r = http.get("https://api.kick.com/public/v1/channels", headers=headers,
+                         params={"slug": slugs[i:i + 50]})
+            r.raise_for_status()
+            for ch in r.json().get("data", []):
+                stream = ch.get("stream") or {}
+                if stream.get("is_live"):
+                    out[ch["slug"].lower()] = {
+                        "game_name": (ch.get("category") or {}).get("name") or "",
+                        "viewer_count": stream.get("viewer_count", 0),
+                    }
     return out
 
 

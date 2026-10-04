@@ -47,3 +47,12 @@ def test_hype_emotes_weigh_more():
     assert message_weight("salut") == 1.0
     assert message_weight("KEKW KEKW") == 2.0
     assert message_weight("KEKW " * 10) == 2.0
+
+
+def test_kick_emotes_count_as_hype():
+    from autoclip.monitor.detector import message_weight
+    from autoclip.monitor.kick import normalize_message
+
+    raw = "LOL [emote:37226:KEKW][emote:37226:KEKW]"
+    assert normalize_message(raw).split() == ["LOL", "KEKW", "KEKW"]
+    assert message_weight(normalize_message(raw)) == 2.0
