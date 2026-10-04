@@ -7,6 +7,7 @@ au statut suivant. Un échec relâche le moment pour un nouvel essai (3 maximum)
 import asyncio
 import json
 import logging
+import re
 import shutil
 import time
 from collections.abc import Awaitable, Callable
@@ -22,6 +23,7 @@ from .db import Database
 from .editor.claude import ClipComposer, ClipEditor
 from .editor.subscription import UsageLimitReached
 from .fetch.downloader import download_clip
+from .gui.envfile import read_env
 from .models import EditDecision, Moment, Platform, Status
 from .monitor.detector import SpikeDetector
 from .monitor.twitch import TwitchAPI, TwitchChat
@@ -34,6 +36,12 @@ WINDOW_S = 10  # taille d'une fenêtre d'activité du chat
 IDLE_SLEEP_S = 3
 
 Step = Callable[[Moment], Awaitable[None]]
+
+
+def folder_name(category: str | None) -> str:
+    """Nom de dossier Windows valide pour une catégorie Twitch (« Just Chatting », jeux…)."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", category or "").strip(" .")
+    return name[:80] or "Autre"
 
 
 class Pipeline:
@@ -54,25 +62,38 @@ class Pipeline:
         self.composer = ClipComposer(settings)
         self.renderer = Renderer(settings.max_parallel_renders, settings.render_quality)
         self.review = ReviewBot(settings, self.on_review)
-        # login -> broadcaster_id, rempli à chaque rafraîchissement du top.
+        # login -> broadcaster_id / catégorie, remplis à chaque rafraîchissement.
         self.twitch_ids: dict[str, str] = {}
+        self.twitch_games: dict[str, str] = {}
         # Abonnement Claude à sa limite : les étapes qui appellent Claude attendent cette heure.
         self.claude_paused_until = 0.0
 
+    def moment_dirs(self, moment_id: int) -> list[Path]:
+        """Dossiers d'un moment : data/work/<catégorie>/<id>_… (ou data/work/<id>_… avant)."""
+        pattern = f"{moment_id:06d}_*"
+        return [d for d in [*self.s.work_dir.glob(pattern), *self.s.work_dir.glob(f"*/{pattern}")]
+                if d.is_dir()]
+
     def work_dir(self, m: Moment) -> Path:
-        return self.s.work_dir / f"{m.id:06d}_{m.platform}_{m.channel}"
+        existing = self.moment_dirs(m.id)
+        if existing:
+            return existing[0]
+        return self.s.work_dir / folder_name(m.category) / f"{m.id:06d}_{m.platform}_{m.channel}"
 
     # --- Nettoyage du disque ----------------------------------------------------
 
     def discard_files(self, moment_id: int) -> None:
         """Supprime tout le dossier de travail d'un moment qui ne sera pas publié."""
-        for d in self.s.work_dir.glob(f"{moment_id:06d}_*"):
+        for d in self.moment_dirs(moment_id):
+            parent = d.parent
             shutil.rmtree(d, ignore_errors=True)
             log.info("Fichiers du moment #%d supprimés", moment_id)
+            if parent != self.s.work_dir and not any(parent.iterdir()):
+                parent.rmdir()  # dossier de catégorie devenu vide
 
     def slim_files(self, moment_id: int) -> None:
         """Après validation : garde final.mp4 (et la composition), supprime les intermédiaires."""
-        for d in self.s.work_dir.glob(f"{moment_id:06d}_*"):
+        for d in self.moment_dirs(moment_id):
             for name in ("source.mp4", "render/source.mp4", "telegram_preview.mp4"):
                 (d / name).unlink(missing_ok=True)
             shutil.rmtree(d / "frames", ignore_errors=True)
@@ -83,8 +104,9 @@ class Pipeline:
             return
         statuses = await self.db.statuses()
         dead = {Status.REJECTED.value, Status.FAILED.value}
-        for d in self.s.work_dir.iterdir():
-            if not (d.is_dir() and d.name[:6].isdigit()):
+        candidates = [*self.s.work_dir.iterdir(), *self.s.work_dir.glob("*/*")]
+        for d in candidates:
+            if not (d.is_dir() and d.name[:6].isdigit() and d.exists()):
                 continue
             moment_id = int(d.name[:6])
             status = statuses.get(moment_id)
@@ -97,18 +119,36 @@ class Pipeline:
             # La copie de la source dans render/ ne sert plus une fois le rendu fait.
             if (d / "final.mp4").exists():
                 (d / "render" / "source.mp4").unlink(missing_ok=True)
+        for d in self.s.work_dir.iterdir():  # dossiers de catégorie vides
+            if d.is_dir() and not d.name[:6].isdigit() and not any(d.iterdir()):
+                d.rmdir()
 
     # --- Surveillance ---------------------------------------------------------
+
+    def watched_channels(self) -> list[str]:
+        """Liste relue dans le .env à chaque fois : modifiable depuis l'application sans redémarrer."""
+        raw = read_env(Path(".env")).get("WATCH_CHANNELS", self.s.watch_channels)
+        return sorted({c.strip().lower() for c in raw.split(",") if c.strip()})
 
     async def refresh_top_streams(self) -> None:
         while True:
             try:
-                streams = await self.twitch.top_streams(self.s.top_n_streams, self.s.stream_language)
+                streams = []
+                if self.s.include_top_streams:
+                    streams += await self.twitch.top_streams(
+                        self.s.top_n_streams, self.s.stream_language)
+                watched = self.watched_channels()
+                live_watched = await self.twitch.live_streams(watched) if watched else []
+                streams += live_watched
                 self.twitch_ids = {s["user_login"]: s["user_id"] for s in streams}
+                self.twitch_games = {s["user_login"]: s.get("game_name") or "" for s in streams}
                 self.twitch_chat.set_channels(set(self.twitch_ids))
-                log.info("Top Twitch : %s", ", ".join(self.twitch_ids))
+                log.info("Surveillés : %s", ", ".join(self.twitch_ids) or "aucun stream en live")
+                if watched:
+                    live = {s["user_login"] for s in live_watched}
+                    log.info("Liste perso : %d/%d en live", len(live), len(watched))
             except Exception:
-                log.exception("Impossible de récupérer le top Twitch")
+                log.exception("Impossible de récupérer les streams Twitch")
             await asyncio.sleep(self.s.poll_interval_s)
 
     async def detect_loop(self) -> None:
@@ -122,11 +162,13 @@ class Pipeline:
                 m = Moment(
                     platform=Platform.TWITCH,
                     channel=channel,
+                    category=self.twitch_games.get(channel) or None,
                     detected_at=datetime.now(UTC),
                     score=score,
                 )
                 m.id = await self.db.insert_moment(m)
-                log.info("Moment fort #%d sur %s (x%.1f)", m.id, channel, score)
+                log.info("Moment fort #%d sur %s · %s (x%.1f)", m.id, channel,
+                         m.category or "?", score)
 
     # --- Étapes ---------------------------------------------------------------
 
@@ -150,6 +192,17 @@ class Pipeline:
         path = await download_clip(m.clip_url, self.work_dir(m))
         await self.db.advance(m, Status.DOWNLOADED, video_path=path)
 
+    @property
+    def source_review(self) -> bool:
+        return self.s.review_source_clips and self.review.enabled
+
+    async def step_source_review(self, m: Moment) -> None:
+        """Envoie le clip brut sur Telegram ; il ne part au montage que si tu le valides."""
+        await self.review.send_source_for_review(
+            m.id, m.channel, m.category, m.score, Path(m.video_path))
+        await self.db.advance(m, Status.SOURCE_PENDING)
+        log.info("Clip #%d envoyé sur Telegram : à toi de choisir s'il part au montage", m.id)
+
     async def step_analyze(self, m: Moment) -> None:
         wd = self.work_dir(m)
         video = Path(m.video_path)
@@ -161,7 +214,8 @@ class Pipeline:
         video = Path(m.video_path)
         transcript = json.loads(Path(m.transcript_path).read_text(encoding="utf-8"))
         # Presque personne ne parle : Claude rejetterait le clip, inutile de payer l'appel.
-        if len(transcript["words"]) < self.s.min_transcript_words:
+        # (Sauf si tu l'as validé toi-même sur Telegram.)
+        if not self.source_review and len(transcript["words"]) < self.s.min_transcript_words:
             await self.db.advance(m, Status.REJECTED,
                                   error=f"Moins de {self.s.min_transcript_words} mots transcrits")
             self.discard_files(m.id)
@@ -172,6 +226,7 @@ class Pipeline:
             duration_s=await probe_duration(video),
             transcript=transcript,
             frames=sorted(Path(m.frames_dir).glob("*.jpg")),
+            approved_by_human=self.source_review,
         )
         if not decision.keep:
             await self.db.advance(m, Status.REJECTED, decision_json=decision.model_dump_json(),
@@ -223,14 +278,19 @@ class Pipeline:
         await self.db.advance(m, Status.PENDING_REVIEW)
         log.info("Moment #%d envoyé sur Telegram pour validation", m.id)
 
-    async def on_review(self, moment_id: int, approved: bool) -> bool:
-        applied = await self.db.set_review_result(moment_id, approved)
+    async def on_review(self, moment_id: int, approved: bool, stage: str = "final") -> bool:
+        applied = await self.db.set_review_result(moment_id, approved, stage)
         if applied:
-            log.info("Moment #%d %s sur Telegram", moment_id, "approuvé" if approved else "rejeté")
-            if approved:
-                self.slim_files(moment_id)
+            if stage == "source":
+                log.info("Clip #%d %s sur Telegram", moment_id,
+                         "envoyé au montage" if approved else "ignoré")
             else:
+                log.info("Moment #%d %s sur Telegram", moment_id,
+                         "approuvé" if approved else "rejeté")
+            if not approved:
                 self.discard_files(moment_id)
+            elif stage == "final":
+                self.slim_files(moment_id)
         return applied
 
     # TODO : step_publish (APPROVED -> PUBLISHED via publish.youtube / publish.tiktok)
@@ -289,7 +349,9 @@ class Pipeline:
                 self.detect_loop(),
                 self.worker(Status.DETECTED, self.step_get_clip, self.s.max_clip_searches),
                 self.worker(Status.CLIPPED, self.step_download),
-                self.worker(Status.DOWNLOADED, self.step_analyze),
+                self.worker(Status.DOWNLOADED,
+                            self.step_source_review if self.source_review else self.step_analyze),
+                self.worker(Status.SOURCE_APPROVED, self.step_analyze),
                 self.worker(Status.ANALYZED, self.step_decide, uses_claude=True),
                 self.worker(Status.DECIDED, self.step_render, uses_claude=True),
             )

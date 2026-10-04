@@ -15,6 +15,8 @@ class Status(StrEnum):
     DETECTED = "detected"
     CLIPPED = "clipped"  # on a une URL de clip
     DOWNLOADED = "downloaded"
+    SOURCE_PENDING = "source_pending"  # clip brut envoyé sur Telegram, en attente de ton choix
+    SOURCE_APPROVED = "source_approved"  # tu as validé le montage
     ANALYZED = "analyzed"  # transcription + frames prêtes
     DECIDED = "decided"  # JSON de montage reçu de Claude
     RENDERED = "rendered"
@@ -31,6 +33,7 @@ class Moment(BaseModel):
     channel: str
     detected_at: datetime
     score: float
+    category: str | None = None  # jeu ou catégorie Twitch (Just Chatting, IRL…)
     status: Status = Status.DETECTED
     clip_url: str | None = None
     video_path: str | None = None

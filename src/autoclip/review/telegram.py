@@ -18,7 +18,13 @@ from ..models import EditDecision
 
 log = logging.getLogger(__name__)
 
-DecisionCallback = Callable[[int, bool], Awaitable[bool]]
+# (moment_id, approuvé, étape "source" ou "final") -> True si appliqué
+DecisionCallback = Callable[[int, bool, str], Awaitable[bool]]
+
+ACTIONS = {
+    "approve": (True, "final"), "reject": (False, "final"),
+    "srcok": (True, "source"), "srcno": (False, "source"),
+}
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # limite d'envoi de fichiers pour un bot
 POLL_TIMEOUT_S = 50  # long polling de getUpdates
@@ -51,11 +57,21 @@ class ReviewBot:
             raise TelegramError(f"{method} : {data.get('description', r.status_code)}")
         return data["result"]
 
+    async def send_source_for_review(
+        self, moment_id: int, channel: str, category: str | None, score: float, video: Path
+    ) -> None:
+        """Clip brut : tu choisis s'il part au montage (ce qui consomme Claude) ou non."""
+        caption = (f"🎞 Nouveau clip #{moment_id}\n{channel} · {category or 'catégorie inconnue'}"
+                   f" · pic x{score:.1f}\n\nOn le monte ?")
+        keyboard = {"inline_keyboard": [[
+            {"text": "🎬 Monter", "callback_data": f"srcok:{moment_id}"},
+            {"text": "🗑 Ignorer", "callback_data": f"srcno:{moment_id}"},
+        ]]}
+        await self._send_video(video, caption, keyboard)
+
     async def send_for_review(
         self, moment_id: int, channel: str, score: float, video: Path, decision: EditDecision
     ) -> None:
-        if video.stat().st_size > MAX_UPLOAD_BYTES:
-            video = await _shrink_for_telegram(video)
         caption = "\n".join([
             f"#{moment_id} · {channel} · pic x{score:.1f}",
             f"🎬 {decision.title}",
@@ -66,6 +82,11 @@ class ReviewBot:
             {"text": "✅ Publier", "callback_data": f"approve:{moment_id}"},
             {"text": "❌ Rejeter", "callback_data": f"reject:{moment_id}"},
         ]]}
+        await self._send_video(video, caption, keyboard)
+
+    async def _send_video(self, video: Path, caption: str, keyboard: dict) -> None:
+        if video.stat().st_size > MAX_UPLOAD_BYTES:
+            video = await _shrink_for_telegram(video)
         with video.open("rb") as f:
             await self._call(
                 "sendVideo",
@@ -105,12 +126,14 @@ class ReviewBot:
             return
 
         action, _, raw_id = query.get("data", "").partition(":")
-        if action not in ("approve", "reject") or not raw_id.isdigit():
+        if action not in ACTIONS or not raw_id.isdigit():
             return
-        approved = action == "approve"
-        applied = await self.on_decision(int(raw_id), approved)
+        approved, stage = ACTIONS[action]
+        applied = await self.on_decision(int(raw_id), approved, stage)
 
-        if applied:
+        if applied and stage == "source":
+            verdict = "🎬 Part au montage" if approved else "🗑 Ignoré (fichiers supprimés)"
+        elif applied:
             verdict = "✅ Approuvé" if approved else "❌ Rejeté (fichiers supprimés)"
         else:
             verdict = "Déjà traité"

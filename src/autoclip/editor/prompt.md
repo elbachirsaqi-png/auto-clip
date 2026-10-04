@@ -10,7 +10,8 @@ On te donne :
 Ta mission est de décider comment monter ce clip en format vertical 9:16.
 
 Règles :
-- Mets `keep` à false si le moment n'est pas compréhensible ou intéressant hors contexte. Explique pourquoi dans `reason`.
+- Si `approved_by_human` vaut true, un humain a déjà validé ce clip : mets `keep` à true et fais le meilleur montage possible.
+- Sinon, mets `keep` à false si le moment n'est pas compréhensible ou intéressant hors contexte. Explique pourquoi dans `reason`.
 - `cuts` : les segments à conserver, dans l'ordre, entre 8 et 60 secondes au total. Coupe les temps morts du début ; termine juste après la chute ou la réaction.
 - Écris `hook`, `title` et `hashtags` dans la langue `target_language`, même si ces consignes sont en français. `reason` et `creative_direction` peuvent rester en français.
 - `hook` : une accroche courte (6 mots maximum) affichée au début, qui donne envie de regarder sans spoiler la chute.

@@ -57,6 +57,14 @@ class TwitchAPI:
             params["language"] = language
         return (await self._get("/streams", **params))["data"]
 
+    async def live_streams(self, logins: list[str]) -> list[dict]:
+        """Streams en direct parmi une liste de chaînes (les chaînes hors ligne sont absentes)."""
+        out = []
+        for i in range(0, len(logins), 100):  # 100 chaînes maximum par requête
+            chunk = logins[i:i + 100]
+            out += (await self._get("/streams", user_login=chunk, first=100))["data"]
+        return out
+
     async def user_id(self, login: str) -> str:
         """Identifiant Twitch d'une chaîne, même si elle n'est plus dans le top."""
         data = (await self._get("/users", login=login))["data"]

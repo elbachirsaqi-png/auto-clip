@@ -86,6 +86,7 @@ class ClipEditor:
         transcript: dict,
         frames: list[Path],
         facecam_hint: dict | None = None,
+        approved_by_human: bool = False,
     ) -> EditDecision:
         content = _frames_content(frames)
         content.append({
@@ -97,6 +98,7 @@ class ClipEditor:
                     "target_language": self.s.clip_language,
                     "duration_s": round(duration_s, 2),
                     "facecam_detection": facecam_hint,
+                    "approved_by_human": approved_by_human,
                     "transcript": transcript,
                 },
             ),

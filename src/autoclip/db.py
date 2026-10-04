@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS moments (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     platform        TEXT NOT NULL,
     channel         TEXT NOT NULL,
+    category        TEXT,
     detected_at     TEXT NOT NULL,
     score           REAL NOT NULL,
     status          TEXT NOT NULL,
@@ -47,7 +48,7 @@ CREATE TABLE IF NOT EXISTS baselines (
 """
 
 _COLUMNS = [
-    "platform", "channel", "detected_at", "score", "status", "clip_url", "video_path",
+    "platform", "channel", "category", "detected_at", "score", "status", "clip_url", "video_path",
     "transcript_path", "frames_dir", "decision_json", "render_path", "error",
 ]
 
@@ -67,6 +68,11 @@ class Database:
         self.conn.row_factory = aiosqlite.Row
         await self.conn.execute("PRAGMA journal_mode=WAL")
         await self.conn.executescript(SCHEMA)
+        # Bases créées avant l'ajout de la catégorie.
+        async with self.conn.execute("PRAGMA table_info(moments)") as cur:
+            columns = {row["name"] for row in await cur.fetchall()}
+        if "category" not in columns:
+            await self.conn.execute("ALTER TABLE moments ADD COLUMN category TEXT")
         # Libère les jobs restés verrouillés si le process a planté.
         await self.conn.execute("UPDATE moments SET locked = 0")
         await self.conn.commit()
@@ -134,13 +140,20 @@ class Database:
         await self.conn.commit()
         return row is not None and row["status"] == Status.FAILED.value
 
-    async def set_review_result(self, moment_id: int, approved: bool) -> bool:
-        """Applique le verdict Telegram. False si le moment n'attendait plus de validation."""
-        new_status = Status.APPROVED if approved else Status.REJECTED
-        error = None if approved else "Rejeté sur Telegram"
+    async def set_review_result(self, moment_id: int, approved: bool, stage: str = "final") -> bool:
+        """Applique le verdict Telegram. False si le moment n'attendait plus de validation.
+
+        stage = "source" (clip brut : part au montage ou non) ou "final" (vidéo montée).
+        """
+        if stage == "source":
+            waiting, ok, label = Status.SOURCE_PENDING, Status.SOURCE_APPROVED, "Clip ignoré sur Telegram"
+        else:
+            waiting, ok, label = Status.PENDING_REVIEW, Status.APPROVED, "Rejeté sur Telegram"
+        new_status = ok if approved else Status.REJECTED
+        error = None if approved else label
         cur = await self.conn.execute(
             "UPDATE moments SET status = ?, error = ?, updated_at = ? WHERE id = ? AND status = ?",
-            (new_status.value, error, _now(), moment_id, Status.PENDING_REVIEW.value),
+            (new_status.value, error, _now(), moment_id, waiting.value),
         )
         await self.conn.commit()
         return cur.rowcount == 1

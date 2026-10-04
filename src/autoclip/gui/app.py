@@ -10,9 +10,11 @@ Le pipeline tourne dans un processus séparé (python -m autoclip du venv du pro
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import tkinter as tk
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,6 +67,8 @@ STATUS_LABELS = {
     "detected": ("Détecté", MUTED),
     "clipped": ("Clip trouvé", MUTED),
     "downloaded": ("Téléchargé", MUTED),
+    "source_pending": ("À valider (clip)", AMBER),
+    "source_approved": ("Validé → montage", MUTED),
     "analyzed": ("Analysé", MUTED),
     "decided": ("Décidé", AMBER),
     "rendered": ("Rendu", AMBER),
@@ -84,11 +88,12 @@ LANGS = ["en", "fr", "es", "de", "pt", "it", "ja", "ko"]
 
 SECTIONS = [
     ("Twitch", "🎮", [
+        ("review_source_clips", "Valider les clips avant montage", "Chaque clip brut arrive sur Telegram : Claude n'est utilisé que si tu cliques « Monter »", "bool", None),
         ("twitch_client_id", "Client ID", "dev.twitch.tv/console > ton application", "text", None),
         ("twitch_client_secret", "Client secret", "Secret de l'application Twitch", "secret", None),
         ("twitch_user_token", "Token utilisateur", "Scope clips:edit, seulement pour créer les clips soi-même", "secret", None),
         ("auto_create_clips", "Créer les clips automatiquement", "Sinon, on attend qu'un viewer clippe le moment", "bool", None),
-        ("top_n_streams", "Streams surveillés", "Nombre de plus gros streams suivis en même temps", "int", None),
+        ("top_n_streams", "Taille du top", "Nombre de plus gros streams suivis (si le top est activé)", "int", None),
         ("stream_language", "Langue des streams", "Code ISO (en, fr…). Vide = toutes les langues", "combo", ["", *LANGS]),
         ("poll_interval_s", "Rafraîchissement du top (s)", "Fréquence de mise à jour de la liste des streams", "int", None),
     ]),
@@ -184,7 +189,7 @@ class DashboardPage(ctk.CTkFrame):
         self.cards = {
             "detected": StatCard(grid, "Moments détectés (aujourd'hui)"),
             "rendered": StatCard(grid, "Vidéos rendues (aujourd'hui)", AMBER),
-            "review": StatCard(grid, "En attente sur Telegram", AMBER),
+            "review": StatCard(grid, "À valider sur Telegram", AMBER),
             "approved": StatCard(grid, "Approuvées (total)", GREEN),
             "cost": StatCard(grid, "Coût Claude (aujourd'hui)", ACCENT),
             "disk": StatCard(grid, "Espace disque utilisé"),
@@ -211,12 +216,13 @@ class DashboardPage(ctk.CTkFrame):
         style.map("AC.Treeview", background=[("selected", ACCENT)])
         style.layout("AC.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
 
-        cols = ("id", "time", "channel", "score", "status", "title")
+        cols = ("id", "time", "channel", "category", "score", "status", "title")
         self.tree = ttk.Treeview(box, columns=cols, show="headings", style="AC.Treeview")
         for col, label, width, anchor in [
             ("id", "#", 60, "center"), ("time", "Heure", 110, "center"),
-            ("channel", "Streamer", 150, "w"), ("score", "Pic", 70, "center"),
-            ("status", "Statut", 130, "w"), ("title", "Titre / raison", 520, "w"),
+            ("channel", "Streamer", 130, "w"), ("category", "Catégorie", 150, "w"),
+            ("score", "Pic", 60, "center"), ("status", "Statut", 130, "w"),
+            ("title", "Titre / raison", 420, "w"),
         ]:
             self.tree.heading(col, text=label)
             self.tree.column(col, width=width, anchor=anchor, stretch=(col == "title"))
@@ -239,10 +245,12 @@ class DashboardPage(ctk.CTkFrame):
                 approved = con.execute(
                     "SELECT count(*) FROM moments WHERE status IN ('approved','published')").fetchone()[0]
                 review = con.execute(
-                    "SELECT count(*) FROM moments WHERE status = 'pending_review'").fetchone()[0]
+                    "SELECT count(*) FROM moments WHERE status IN ('pending_review','source_pending')"
+                ).fetchone()[0]
+                has_cat = any(r[1] == "category" for r in con.execute("PRAGMA table_info(moments)"))
                 rows = con.execute(
-                    "SELECT id, detected_at, channel, score, status, decision_json, error "
-                    "FROM moments ORDER BY id DESC LIMIT 60").fetchall()
+                    f"SELECT id, detected_at, channel, {'category' if has_cat else 'NULL'}, score, "
+                    "status, decision_json, error FROM moments ORDER BY id DESC LIMIT 60").fetchall()
             except sqlite3.Error:
                 pass
             finally:
@@ -257,7 +265,7 @@ class DashboardPage(ctk.CTkFrame):
         self.cards["disk"].set(human_size(dir_size(ROOT / "data/work")))
 
         self.tree.delete(*self.tree.get_children())
-        for id_, detected, channel, score, status, decision, error in rows:
+        for id_, detected, channel, category, score, status, decision, error in rows:
             title = ""
             if decision:
                 try:
@@ -266,16 +274,23 @@ class DashboardPage(ctk.CTkFrame):
                     pass
             if status in ("rejected", "failed") and error:
                 title = error
+            elif status == "source_pending":
+                title = "Clip brut sur Telegram : « Monter » ou « Ignorer »"
+            elif error and error.startswith("En pause"):
+                title = error
             local = datetime.fromisoformat(detected).astimezone().strftime("%d/%m %H:%M")
             label = STATUS_LABELS.get(status, (status, TEXT))[0]
             self.tree.insert("", "end", iid=str(id_), tags=(status,),
-                             values=(id_, local, channel, f"x{score:.1f}", label, title[:140]))
+                             values=(id_, local, channel, category or "", f"x{score:.1f}", label,
+                                     title[:140]))
 
     def open_selected(self, _event):
         sel = self.tree.selection()
         if not sel:
             return
-        dirs = list((ROOT / "data/work").glob(f"{int(sel[0]):06d}_*"))
+        pattern = f"{int(sel[0]):06d}_*"
+        work = ROOT / "data/work"
+        dirs = [*work.glob(pattern), *work.glob(f"*/{pattern}")]
         if not dirs:
             self.app.toast.show("Fichiers supprimés (moment rejeté ou abandonné)", MUTED)
             return
@@ -396,6 +411,151 @@ class PromptsPage(ctk.CTkFrame):
         for name, path in PROMPTS.items():
             path.write_text(self.boxes[name].get("1.0", "end").rstrip() + "\n", encoding="utf-8")
         self.app.settings_saved("Prompts enregistrés")
+
+
+LOGIN_RE = re.compile(r"^[a-zA-Z0-9_]{3,25}$")
+
+
+class StreamersPage(ctk.CTkFrame):
+    """Streamers toujours surveillés quand ils sont en live, même hors du top."""
+
+    def __init__(self, master, app):
+        super().__init__(master, fg_color="transparent")
+        self.app = app
+        bar = header(self, "Streamers", "Surveillés dès qu'ils sont en live, même hors du top")
+        self.check_btn = ctk.CTkButton(bar, text="⟳  Vérifier qui est en live", width=200, height=36,
+                                       font=font(13), fg_color=CARD, hover_color=BORDER,
+                                       command=self.check_live)
+        self.check_btn.pack(side="right")
+
+        add = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14, border_width=1, border_color=BORDER)
+        add.pack(fill="x", padx=34, pady=(0, 12))
+        self.entry = ctk.CTkEntry(add, placeholder_text="Pseudo Twitch ou lien (ex. kaicenat, twitch.tv/xqc)",
+                                  height=38, font=font(13), fg_color=PANEL, border_color=BORDER)
+        self.entry.pack(side="left", fill="x", expand=True, padx=(16, 8), pady=14)
+        self.entry.bind("<Return>", lambda _e: self.add())
+        ctk.CTkButton(add, text="+  Ajouter", width=120, height=38, font=font(13, "bold"),
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.add).pack(side="left", padx=(0, 16))
+
+        opts = ctk.CTkFrame(self, fg_color="transparent")
+        opts.pack(fill="x", padx=40, pady=(0, 8))
+        self.include_top = tk.BooleanVar()
+        ctk.CTkSwitch(opts, text="Surveiller aussi le top Twitch", variable=self.include_top,
+                      progress_color=ACCENT, font=font(13), command=self.save_top).pack(side="left")
+        self.count = ctk.CTkLabel(opts, text="", font=font(12), text_color=MUTED)
+        self.count.pack(side="right")
+
+        self.list = ctk.CTkScrollableFrame(self, fg_color=CARD, corner_radius=14, border_width=1,
+                                           border_color=BORDER)
+        self.list.pack(fill="both", expand=True, padx=34, pady=(0, 24))
+        self.channels: list[str] = []
+        self.live: dict[str, dict] = {}
+
+    def load(self):
+        env = read_env(ENV_FILE)
+        raw = env.get("WATCH_CHANNELS", default_of("watch_channels"))
+        self.channels = sorted({c.strip().lower() for c in raw.split(",") if c.strip()})
+        self.include_top.set(env.get("INCLUDE_TOP_STREAMS", default_of("include_top_streams"))
+                             .lower() in ("1", "true", "yes", "on"))
+        self.render()
+
+    def render(self):
+        for w in self.list.winfo_children():
+            w.destroy()
+        n_live = sum(1 for c in self.channels if c in self.live)
+        self.count.configure(text=f"{len(self.channels)} streamer(s)"
+                             + (f" · {n_live} en live" if self.live else ""))
+        if not self.channels:
+            ctk.CTkLabel(self.list, text="Aucun streamer : ajoute un pseudo Twitch ci-dessus.",
+                         font=font(13), text_color=MUTED).pack(pady=40)
+            return
+        for c in self.channels:
+            row = ctk.CTkFrame(self.list, fg_color=PANEL, corner_radius=10, height=52)
+            row.pack(fill="x", padx=8, pady=4)
+            info = self.live.get(c)
+            dot = GREEN if info else (MUTED if self.live else BORDER)
+            ctk.CTkLabel(row, text="●", font=font(16), text_color=dot, width=28).pack(side="left", padx=(12, 4))
+            ctk.CTkLabel(row, text=c, font=font(14, "bold")).pack(side="left", pady=12)
+            if info:
+                detail = f"{info.get('game_name') or '?'} · {info.get('viewer_count', 0):,} viewers".replace(",", " ")
+            elif self.live:
+                detail = "hors ligne"
+            else:
+                detail = ""
+            ctk.CTkLabel(row, text=detail, font=font(12), text_color=MUTED).pack(side="left", padx=14)
+            ctk.CTkButton(row, text="Retirer", width=80, height=30, font=font(12), fg_color=CARD,
+                          hover_color=RED, command=lambda ch=c: self.remove(ch)).pack(side="right", padx=10)
+            ctk.CTkButton(row, text="Ouvrir", width=70, height=30, font=font(12), fg_color=CARD,
+                          hover_color=BORDER,
+                          command=lambda ch=c: os.startfile(f"https://twitch.tv/{ch}")).pack(side="right")
+
+    def add(self):
+        raw = self.entry.get().strip().rstrip("/")
+        login = raw.rsplit("/", 1)[-1].lstrip("@").lower()
+        if not LOGIN_RE.match(login):
+            self.app.toast.show("Pseudo Twitch invalide (3 à 25 lettres, chiffres ou _)", RED)
+            return
+        if login in self.channels:
+            self.app.toast.show(f"{login} est déjà dans la liste", AMBER)
+            return
+        self.channels = sorted([*self.channels, login])
+        self.entry.delete(0, "end")
+        self.save(f"{login} ajouté")
+
+    def remove(self, login: str):
+        self.channels = [c for c in self.channels if c != login]
+        self.save(f"{login} retiré")
+
+    def save(self, message: str):
+        write_env(ENV_FILE, {"WATCH_CHANNELS": ",".join(self.channels)})
+        self.render()
+        # Le pipeline relit la liste à chaque rafraîchissement : pas besoin de redémarrer.
+        self.app.toast.show(f"{message} · pris en compte sous 1 minute")
+
+    def save_top(self):
+        write_env(ENV_FILE, {"INCLUDE_TOP_STREAMS": "true" if self.include_top.get() else "false"})
+        self.app.settings_saved("Surveillance du top modifiée")
+
+    def check_live(self):
+        if not self.channels:
+            return
+        self.check_btn.configure(state="disabled", text="Vérification…")
+        threading.Thread(target=self._check_thread, daemon=True).start()
+
+    def _check_thread(self):
+        try:
+            live = fetch_live(self.channels)
+            self.after(0, lambda: self._checked(live, None))
+        except Exception as e:  # noqa: BLE001  (réseau, identifiants Twitch…)
+            self.after(0, lambda err=e: self._checked(None, err))
+
+    def _checked(self, live, error):
+        self.check_btn.configure(state="normal", text="⟳  Vérifier qui est en live")
+        if error is not None:
+            self.app.toast.show(f"Twitch injoignable : {type(error).__name__}", RED)
+            return
+        self.live = live
+        self.render()
+
+
+def fetch_live(logins: list[str]) -> dict[str, dict]:
+    """Streams en direct parmi `logins`, avec les identifiants Twitch du .env."""
+    import httpx
+
+    env = read_env(ENV_FILE)
+    cid, secret = env.get("TWITCH_CLIENT_ID", ""), env.get("TWITCH_CLIENT_SECRET", "")
+    with httpx.Client(timeout=15) as http:
+        token = http.post("https://id.twitch.tv/oauth2/token", data={
+            "client_id": cid, "client_secret": secret, "grant_type": "client_credentials"})
+        token.raise_for_status()
+        headers = {"Client-Id": cid, "Authorization": f"Bearer {token.json()['access_token']}"}
+        out = {}
+        for i in range(0, len(logins), 100):
+            r = http.get("https://api.twitch.tv/helix/streams", headers=headers,
+                         params={"user_login": logins[i:i + 100], "first": 100})
+            r.raise_for_status()
+            out.update({st["user_login"].lower(): st for st in r.json()["data"]})
+    return out
 
 
 class LogsPage(ctk.CTkFrame):
@@ -525,12 +685,14 @@ class App(ctk.CTk):
         self.pages = {
             "dashboard": DashboardPage(content, self),
             "settings": SettingsPage(content, self),
+            "streamers": StreamersPage(content, self),
             "prompts": PromptsPage(content, self),
             "logs": LogsPage(content, self),
         }
         self.nav = {}
         for key, label in [("dashboard", "📊  Tableau de bord"), ("settings", "⚙️  Paramètres"),
-                           ("prompts", "✍️  Prompts"), ("logs", "📜  Journal")]:
+                           ("streamers", "👥  Streamers"), ("prompts", "✍️  Prompts"),
+                           ("logs", "📜  Journal")]:
             b = ctk.CTkButton(side, text=label, anchor="w", height=42, font=font(14), corner_radius=10,
                               fg_color="transparent", hover_color=CARD, text_color=TEXT,
                               command=lambda k=key: self.show(k))
@@ -553,6 +715,7 @@ class App(ctk.CTk):
         self.toast = Toast(self)
         self.pages["settings"].load()
         self.pages["prompts"].load()
+        self.pages["streamers"].load()
         self.current = None
         self.show("dashboard")
         self.protocol("WM_DELETE_WINDOW", self.on_close)

@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     telegram_chat_id: str = ""
 
     top_n_streams: int = 10
+    # Surveiller le top N (en plus des streamers de la liste).
+    include_top_streams: bool = True
+    # Streamers toujours surveillés quand ils sont en live, séparés par des virgules.
+    watch_channels: str = ""
+    # Envoie chaque clip brut sur Telegram : il ne part au montage (et n'utilise Claude) que validé.
+    review_source_clips: bool = True
     # Langue des streams surveillés (code ISO 639-1, ex. en, fr). Vide = toutes les langues.
     stream_language: str = "en"
     # Langue du public visé : accroche, titre, hashtags et textes à l'écran.
