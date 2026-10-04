@@ -21,7 +21,7 @@ from .analysis.transcribe import transcribe
 from .config import Settings
 from .db import Database
 from .editor.claude import ClipComposer, ClipEditor
-from .editor.subscription import UsageLimitReached
+from .editor.subscription import ClaudeUnavailable, UsageLimitReached
 from .fetch.downloader import download_clip
 from .gui.envfile import read_env
 from .models import EditDecision, Moment, Platform, Status
@@ -364,7 +364,15 @@ class Pipeline:
                 await step(m)
             except UsageLimitReached as e:
                 # Pas un échec : le moment garde son statut et sera repris à la réinitialisation.
+                newly_paused = time.time() >= self.claude_paused_until
                 self.claude_paused_until = max(self.claude_paused_until, e.resets_at)
+                if newly_paused and self.review.enabled:
+                    hint = ("\nLance « claude update » (ou reconnecte-toi), le pipeline réessaie "
+                            "tout seul toutes les 15 min." if isinstance(e, ClaudeUnavailable) else "")
+                    try:
+                        await self.review.send_text(f"⏸ Montages en pause : {e}{hint}")
+                    except Exception:  # noqa: BLE001  (Telegram indisponible : on log seulement)
+                        log.warning("Alerte Telegram non envoyée")
                 reset = datetime.fromtimestamp(e.resets_at, UTC).astimezone().strftime("%H:%M")
                 log.warning("%s : moment #%d en pause jusqu'à %s", e, m.id, reset)
                 await self.db.pause(m, f"En pause : {e} (reprise vers {reset})")

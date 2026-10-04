@@ -28,6 +28,21 @@ class UsageLimitReached(Exception):
         super().__init__(message or "Limite de l'abonnement Claude atteinte")
 
 
+class ClaudeUnavailable(UsageLimitReached):
+    """Claude Code inutilisable (version trop ancienne, compte déconnecté) : à réparer à la main.
+
+    Traité comme une limite : les moments sont mis en pause au lieu d'échouer.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(time.time() + SETUP_RETRY_S, message)
+
+
+SETUP_RETRY_S = 15 * 60
+SETUP_WORDS = ("claude update", "not logged in", "please run /login", "invalid api key",
+               "authentication_error", "does not support this model")
+
+
 def claude_cli() -> str:
     path = shutil.which("claude")
     if path is None:
@@ -94,6 +109,8 @@ async def run_claude(
         text = str(result.get("result", "")) + " " + str(result.get("errors", ""))
         if _looks_like_limit(text):
             raise UsageLimitReached(_reset_time(rate))
+        if any(w in text.lower() for w in SETUP_WORDS):
+            raise ClaudeUnavailable(f"Claude Code à réparer : {text.strip()[:300]}")
         raise RuntimeError(f"Claude Code : {text.strip()[:500]}")
     return result, rate
 

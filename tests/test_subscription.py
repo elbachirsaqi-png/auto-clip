@@ -62,3 +62,14 @@ async def test_pause_keeps_status_and_attempts(tmp_path):
         assert (await db.claim(m.status)).id == m.id
     finally:
         await db.close()
+
+
+async def test_outdated_claude_code_pauses_instead_of_failing(monkeypatch):
+    from autoclip.editor.subscription import ClaudeUnavailable
+
+    fake_cli(monkeypatch, '{"type":"result","is_error":true,"result":"API Error: 400 Claude Code '
+             '2.1.92 does not support this model; Run \'claude update\'"}\n')
+    with pytest.raises(ClaudeUnavailable) as e:
+        await run_claude(system="s", content=[], model="m", effort="medium")
+    assert isinstance(e.value, UsageLimitReached)  # même traitement : pause, pas d'échec
+    assert e.value.resets_at > time.time()
