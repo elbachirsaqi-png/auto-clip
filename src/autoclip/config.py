@@ -71,6 +71,8 @@ class Settings(BaseSettings):
     auto_publish: bool = True
     # Chrome invisible pendant la publication (visible = plus facile à surveiller au début).
     publish_headless: bool = False
+    # Adresse pour les demandes de retrait, ajoutée en fin de description YouTube.
+    contact_email: str = ""
 
     # Modèle faster-whisper : tiny, base, small, medium, large-v3 (plus gros = plus précis, plus lent).
     whisper_model: str = "small"

@@ -126,6 +126,7 @@ SECTIONS = [
     ]),
     ("Publication", "🚀", [
         ("auto_publish", "Publication automatique", "Publie les vidéos approuvées sur les chaînes de la page Chaînes", "bool", None),
+        ("contact_email", "E-mail de contact", "Ajouté à chaque description YouTube pour les demandes de retrait", "text", None),
         ("publish_headless", "Chrome invisible", "Publier sans afficher la fenêtre Chrome (laisse-la visible au début)", "bool", None),
     ]),
     ("Transcription et rendu", "🎬", [

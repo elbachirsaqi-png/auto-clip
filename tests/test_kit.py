@@ -47,3 +47,10 @@ def test_tiktok_caption_drops_shorts_and_caps_hashtags():
     assert first_line == d.title
     assert "#Shorts" not in caption
     assert tags.split() == ["#xqc", "#a", "#b", "#c", "#d"]
+
+
+def test_description_contact_line():
+    text = kit.description(decision(), MOMENT, contact_email="claims@example.com", language="en")
+    assert "want it removed? Contact: claims@example.com" in text
+    assert text.rstrip().endswith("#Shorts")  # les hashtags restent à la fin
+    assert "Contact" not in kit.description(decision(), MOMENT)  # pas d'adresse = pas de ligne

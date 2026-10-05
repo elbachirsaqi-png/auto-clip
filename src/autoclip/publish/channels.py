@@ -53,8 +53,8 @@ class Destination(BaseModel):
 
 DEFAULTS = [
     Destination(id="streamers", name="Streamers connus",
-                streamers=["kaicenat", "clavicular"]),
-    Destination(id="counter-strike", name="Counter-Strike",
+                streamers=["kaicenat", "clavicular"], categories=["IRL", "Just Chatting"]),
+    Destination(id="counter-strike", name="Counter-Strike", enabled=False,
                 categories=["Counter-Strike"]),
     # Prête pour la sortie : activer dans l'application le moment venu.
     Destination(id="gta6", name="GTA 6", enabled=False,

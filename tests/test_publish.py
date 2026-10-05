@@ -14,13 +14,17 @@ def moment(channel="kaicenat", category="Just Chatting", id_=None) -> Moment:
 
 def test_routing_by_streamer_then_category():
     dests = [d.model_copy() for d in channels.DEFAULTS]
-    assert channels.route(moment("KaiCenat"), dests).id == "streamers"
+    assert channels.route(moment("KaiCenat", "Grand Theft Auto V"), dests).id == "streamers"
+    assert channels.route(moment("random", "Just Chatting"), dests).id == "streamers"
+    assert channels.route(moment("random", "IRL"), dests).id == "streamers"
+    # Counter-Strike et GTA 6 sont prêtes mais désactivées tant que les chaînes n'existent pas.
+    assert channels.route(moment("eslcs", "Counter-Strike"), dests) is None
+    dests[1].enabled = True
     assert channels.route(moment("eslcs", "Counter-Strike"), dests).id == "counter-strike"
-    # GTA 6 est prête mais désactivée ; GTA V ne doit jamais tomber dedans.
     assert channels.route(moment("x", "Grand Theft Auto VI"), dests) is None
     dests[2].enabled = True
     assert channels.route(moment("x", "Grand Theft Auto VI"), dests).id == "gta6"
-    assert channels.route(moment("x", "Grand Theft Auto V (GTA)"), dests) is None
+    assert channels.route(moment("x", "Grand Theft Auto V (GTA)"), dests) is None  # pas GTA 5
     assert channels.route(moment("payo", "World of Warcraft"), dests) is None
 
 

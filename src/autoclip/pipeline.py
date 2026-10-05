@@ -429,7 +429,7 @@ class Pipeline:
             log.warning("Moment #%d : vidéo finale introuvable, pas de kit", moment_id)
             return
         decision = EditDecision.model_validate_json(m.decision_json)
-        video, _ = build_kit(m, decision, Path(m.render_path))
+        video, _ = build_kit(m, decision, Path(m.render_path), self.s.contact_email, self.s.clip_language)
         self.discard_files(moment_id)  # la vidéo est dans le kit, le reste ne sert plus
         log.info("Kit de publication prêt : %s", video.name)
         dest = channels.route(m)
@@ -444,7 +444,7 @@ class Pipeline:
         # Deux messages séparés : un appui long pour copier chacun dans YouTube Studio.
         await self.review.send_text(f"📋 À publier (#{moment_id}) · YouTube : titre puis description")
         await self.review.send_text(decision.title)
-        await self.review.send_text(description(decision, m))
+        await self.review.send_text(description(decision, m, self.s.contact_email, self.s.clip_language))
         await self.review.send_text("🎵 TikTok : légende")
         await self.review.send_text(tiktok_caption(decision, m))
         await self.review.send_text(f"📁 Sur le PC : data/a_publier/{video.name}")
@@ -503,7 +503,7 @@ class Pipeline:
         log.info("Publication de #%d sur %s (%s)…", m.id, platform, dest.name)
         try:
             url = await publish(dest, platform, video, title=decision.title,
-                                description=description(decision, m),
+                                description=description(decision, m, self.s.contact_email, self.s.clip_language),
                                 caption=tiktok_caption(decision, m),
                                 headless=self.s.publish_headless)
         except NotLoggedIn:
