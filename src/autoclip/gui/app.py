@@ -41,6 +41,7 @@ os.chdir(ROOT)  # chemins relatifs (data/, .env) et lecture du .env par Settings
 
 from ..config import Settings
 from ..procutil import LOG_FILE, running_pid
+from ..publish import channels
 
 ENV_FILE = ROOT / ".env"
 PROMPTS = {
@@ -122,6 +123,10 @@ SECTIONS = [
     ("Telegram", "✈️", [
         ("telegram_bot_token", "Token du bot", "Donné par @BotFather", "secret", None),
         ("telegram_chat_id", "Chat ID", "Conversation où arrivent les vidéos à valider", "text", None),
+    ]),
+    ("Publication", "🚀", [
+        ("auto_publish", "Publication automatique", "Publie les vidéos approuvées sur les chaînes de la page Chaînes", "bool", None),
+        ("publish_headless", "Chrome invisible", "Publier sans afficher la fenêtre Chrome (laisse-la visible au début)", "bool", None),
     ]),
     ("Transcription et rendu", "🎬", [
         ("whisper_model", "Modèle Whisper", "Plus gros = plus précis mais plus lent", "choice", ["tiny", "base", "small", "medium", "large-v3"]),
@@ -628,6 +633,159 @@ def fetch_live_kick(slugs: list[str]) -> dict[str, dict]:
     return out
 
 
+class ChannelsPage(ctk.CTkFrame):
+    """Chaînes de destination : règles d'aiguillage, rythme, connexion des profils Chrome."""
+
+    def __init__(self, master, app):
+        super().__init__(master, fg_color="transparent")
+        self.app = app
+        bar = header(self, "Chaînes", "Où part chaque clip approuvé : publication automatique via Chrome")
+        ctk.CTkButton(bar, text="Enregistrer", width=140, height=36, font=font(13, "bold"),
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.save).pack(side="right")
+        ctk.CTkButton(bar, text="+  Nouvelle chaîne", width=160, height=36, font=font(13),
+                      fg_color=CARD, hover_color=BORDER, command=self.add).pack(side="right", padx=8)
+        self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.scroll.pack(fill="both", expand=True, padx=20, pady=(0, 16))
+        self.rows: list[dict] = []
+
+    def load(self):
+        self.render(channels.load())
+
+    def render(self, dests):
+        for w in self.scroll.winfo_children():
+            w.destroy()
+        self.rows = []
+        ctk.CTkLabel(self.scroll, font=font(12), text_color=MUTED, justify="left", anchor="w",
+                     text="Un clip approuvé part sur la première chaîne dont il respecte une règle "
+                          "(streamer OU catégorie).\nSans chaîne correspondante, il reste en "
+                          "publication manuelle (dossier « Vidéos à publier »).").pack(fill="x", padx=12, pady=(0, 6))
+        for d in dests:
+            self._card(d)
+
+    def _card(self, d):
+        card = ctk.CTkFrame(self.scroll, fg_color=CARD, corner_radius=14, border_width=1, border_color=BORDER)
+        card.pack(fill="x", padx=8, pady=8)
+        row = {"id": d.id, "frame": card}
+
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=18, pady=(14, 6))
+        row["name"] = tk.StringVar(value=d.name)
+        ctk.CTkEntry(top, textvariable=row["name"], width=260, height=34, font=font(15, "bold"),
+                     fg_color=PANEL, border_color=BORDER).pack(side="left")
+        row["enabled"] = tk.BooleanVar(value=d.enabled)
+        ctk.CTkSwitch(top, text="Active", variable=row["enabled"], progress_color=ACCENT,
+                      font=font(13)).pack(side="left", padx=16)
+        ctk.CTkButton(top, text="Supprimer", width=90, height=30, font=font(12), fg_color=PANEL,
+                      hover_color=RED, command=lambda r=row: self.remove(r)).pack(side="right")
+
+        def field(label, help_, value, key, width=420):
+            line = ctk.CTkFrame(card, fg_color="transparent")
+            line.pack(fill="x", padx=18, pady=3)
+            ctk.CTkLabel(line, text=label, font=font(13, "bold"), width=150, anchor="w").pack(side="left")
+            row[key] = tk.StringVar(value=value)
+            ctk.CTkEntry(line, textvariable=row[key], width=width, height=32, font=font(13),
+                         fg_color=PANEL, border_color=BORDER).pack(side="left")
+            ctk.CTkLabel(line, text=help_, font=font(11), text_color=MUTED).pack(side="left", padx=10)
+
+        field("Streamers", "pseudos séparés par des virgules", ", ".join(d.streamers), "streamers")
+        field("Catégories", "mots-clés du jeu (ex. Counter-Strike)", ", ".join(d.categories), "categories")
+
+        rhythm = ctk.CTkFrame(card, fg_color="transparent")
+        rhythm.pack(fill="x", padx=18, pady=3)
+        ctk.CTkLabel(rhythm, text="Rythme", font=font(13, "bold"), width=150, anchor="w").pack(side="left")
+        row["max_per_day"] = tk.StringVar(value=str(d.max_per_day))
+        ctk.CTkEntry(rhythm, textvariable=row["max_per_day"], width=60, height=32, font=font(13),
+                     fg_color=PANEL, border_color=BORDER).pack(side="left")
+        ctk.CTkLabel(rhythm, text="par jour, espacées de", font=font(12)).pack(side="left", padx=8)
+        row["min_gap_minutes"] = tk.StringVar(value=str(d.min_gap_minutes))
+        ctk.CTkEntry(rhythm, textvariable=row["min_gap_minutes"], width=70, height=32, font=font(13),
+                     fg_color=PANEL, border_color=BORDER).pack(side="left")
+        ctk.CTkLabel(rhythm, text="min (par plateforme)", font=font(12)).pack(side="left", padx=8)
+
+        for platform, label in (("youtube", "YouTube"), ("tiktok", "TikTok")):
+            line = ctk.CTkFrame(card, fg_color=PANEL, corner_radius=10)
+            line.pack(fill="x", padx=18, pady=4)
+            row[platform] = tk.BooleanVar(value=getattr(d, platform))
+            ctk.CTkSwitch(line, text=label, variable=row[platform], progress_color=ACCENT,
+                          font=font(13, "bold"), width=130).pack(side="left", padx=12, pady=10)
+            ok = d.logged_in(platform)
+            ctk.CTkLabel(line, text="● Connecté" if ok else "● Non connecté", font=font(12),
+                         text_color=GREEN if ok else AMBER).pack(side="left", padx=8)
+            if platform == "youtube":
+                row["youtube_visibility"] = tk.StringVar(value=d.youtube_visibility)
+                ctk.CTkOptionMenu(line, values=["public", "unlisted", "private"], width=110, height=30,
+                                  variable=row["youtube_visibility"], fg_color=CARD, button_color=BORDER,
+                                  button_hover_color=ACCENT).pack(side="left", padx=12)
+            ctk.CTkButton(line, text="Reconnecter" if ok else "Connecter", width=120, height=30,
+                          font=font(12, "bold"), fg_color=ACCENT if not ok else CARD,
+                          hover_color=ACCENT_HOVER,
+                          command=lambda r=row, p=platform: self.connect(r, p)).pack(side="right", padx=12)
+        ctk.CTkFrame(card, height=8, fg_color="transparent").pack()
+        self.rows.append(row)
+
+    def collect(self):
+        dests = []
+        for r in self.rows:
+            split = lambda key, r=r: [x.strip() for x in r[key].get().split(",") if x.strip()]
+            dests.append(channels.Destination(
+                id=r["id"], name=r["name"].get().strip() or r["id"], enabled=r["enabled"].get(),
+                streamers=[s.lower() for s in split("streamers")], categories=split("categories"),
+                youtube=r["youtube"].get(), tiktok=r["tiktok"].get(),
+                youtube_visibility=r["youtube_visibility"].get(),
+                max_per_day=int(r["max_per_day"].get() or 0),
+                min_gap_minutes=int(r["min_gap_minutes"].get() or 0)))
+        return dests
+
+    def save(self, quiet=False):
+        try:
+            dests = self.collect()
+        except (ValueError, ValidationError) as e:
+            messagebox.showerror("Valeur invalide", f"Vérifie les nombres du rythme.\n\n{e}")
+            return False
+        channels.save(dests)
+        if not quiet:
+            self.app.toast.show("Chaînes enregistrées · prises en compte à la prochaine publication")
+        return True
+
+    def add(self):
+        if not self.save(quiet=True):
+            return
+        dests = channels.load()
+        base = "chaine"
+        ids = {d.id for d in dests}
+        new_id = next(f"{base}-{i}" for i in range(1, 100) if f"{base}-{i}" not in ids)
+        dests.append(channels.Destination(id=new_id, name="Nouvelle chaîne"))
+        channels.save(dests)
+        self.render(dests)
+
+    def remove(self, row):
+        if not messagebox.askyesno("Supprimer", f"Supprimer la chaîne « {row['name'].get()} » ?\n"
+                                   "(Les profils Chrome connectés sont conservés.)"):
+            return
+        self.rows = [r for r in self.rows if r is not row]
+        self.save(quiet=True)
+        self.render(channels.load())
+
+    def connect(self, row, platform):
+        if not self.save(quiet=True):
+            return
+        python = ROOT / ".venv/Scripts/python.exe"
+        name = "YouTube" if platform == "youtube" else "TikTok"
+        messagebox.showinfo(
+            f"Connexion {name}",
+            f"Chrome va s'ouvrir avec le profil dédié à « {row['name'].get()} ».\n\n"
+            f"Connecte-toi au compte {name} de cette chaîne"
+            + (" et choisis la bonne chaîne YouTube si ton compte en a plusieurs" if platform == "youtube" else "")
+            + ", puis ferme la fenêtre Chrome.")
+
+        def run():
+            subprocess.run([str(python), "-m", "autoclip.publish.browser", "login", row["id"], platform],
+                           cwd=ROOT, creationflags=NO_WINDOW, check=False)
+            self.after(0, self.load)
+
+        threading.Thread(target=run, daemon=True).start()
+
+
 class LogsPage(ctk.CTkFrame):
     def __init__(self, master, app):
         super().__init__(master, fg_color="transparent")
@@ -756,12 +914,14 @@ class App(ctk.CTk):
             "dashboard": DashboardPage(content, self),
             "settings": SettingsPage(content, self),
             "streamers": StreamersPage(content, self),
+            "channels": ChannelsPage(content, self),
             "prompts": PromptsPage(content, self),
             "logs": LogsPage(content, self),
         }
         self.nav = {}
         for key, label in [("dashboard", "📊  Tableau de bord"), ("settings", "⚙️  Paramètres"),
-                           ("streamers", "👥  Streamers"), ("prompts", "✍️  Prompts"),
+                           ("streamers", "👥  Streamers"), ("channels", "📺  Chaînes"),
+                           ("prompts", "✍️  Prompts"),
                            ("logs", "📜  Journal")]:
             b = ctk.CTkButton(side, text=label, anchor="w", height=42, font=font(14), corner_radius=10,
                               fg_color="transparent", hover_color=CARD, text_color=TEXT,
@@ -786,6 +946,7 @@ class App(ctk.CTk):
         self.pages["settings"].load()
         self.pages["prompts"].load()
         self.pages["streamers"].load()
+        self.pages["channels"].load()
         self.current = None
         self.show("dashboard")
         self.protocol("WM_DELETE_WINDOW", self.on_close)

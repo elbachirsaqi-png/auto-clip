@@ -48,7 +48,13 @@ def main() -> None:
         cwd=ROOT,
     )
     target = ROOT / "AutoClip.exe"
-    shutil.copy2(ROOT / "build/dist/AutoClip.exe", target)
+    try:
+        shutil.copy2(ROOT / "build/dist/AutoClip.exe", target)
+    except PermissionError:
+        # AutoClip.exe est ouvert : Windows le verrouille. On dépose la nouvelle version à côté.
+        target = ROOT / "AutoClip.new.exe"
+        shutil.copy2(ROOT / "build/dist/AutoClip.exe", target)
+        print("\nAutoClip.exe est ouvert : ferme-le, supprime-le et renomme AutoClip.new.exe.")
     print(f"\nPrêt : {target}")
 
 

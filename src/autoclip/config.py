@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     # Vitesse d'adaptation de la moyenne (petit = mémoire longue).
     detector_alpha: float = 0.05
 
+    # Publication automatique via Chrome sur les chaînes configurées (page Chaînes de l'app).
+    auto_publish: bool = True
+    # Chrome invisible pendant la publication (visible = plus facile à surveiller au début).
+    publish_headless: bool = False
+
     # Modèle faster-whisper : tiny, base, small, medium, large-v3 (plus gros = plus précis, plus lent).
     whisper_model: str = "small"
     # Qualité HyperFrames : draft, looks, delivery.

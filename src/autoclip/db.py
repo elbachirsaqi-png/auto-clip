@@ -1,6 +1,6 @@
 """File d'attente SQLite : la table `moments` sert à la fois d'historique et de queue."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
@@ -172,6 +172,35 @@ class Database:
     async def statuses(self) -> dict[int, str]:
         async with self.conn.execute("SELECT id, status FROM moments") as cur:
             return {row["id"]: row["status"] for row in await cur.fetchall()}
+
+    async def list_by_status(self, status: Status) -> list[Moment]:
+        async with self.conn.execute(
+            "SELECT * FROM moments WHERE status = ? ORDER BY id", (status.value,)
+        ) as cur:
+            rows = await cur.fetchall()
+        return [Moment(**{k: r[k] for k in r.keys() if k in Moment.model_fields})  # noqa: SIM118
+                for r in rows]
+
+    async def set_status(self, moment_id: int, status: Status) -> None:
+        await self.conn.execute("UPDATE moments SET status = ?, updated_at = ? WHERE id = ?",
+                                (status.value, _now(), moment_id))
+        await self.conn.commit()
+
+    async def published_targets(self, moment_id: int) -> set[str]:
+        async with self.conn.execute(
+            "SELECT target FROM publications WHERE moment_id = ?", (moment_id,)
+        ) as cur:
+            return {r[0] for r in await cur.fetchall()}
+
+    async def target_activity(self, target: str) -> tuple[str | None, int]:
+        """(date de la dernière publication, nombre sur les dernières 24 h) pour une cible."""
+        since = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+        async with self.conn.execute(
+            "SELECT max(published_at), sum(published_at >= ?) FROM publications WHERE target = ?",
+            (since, target),
+        ) as cur:
+            last, count = await cur.fetchone()
+        return last, count or 0
 
     async def record_publication(self, moment_id: int, target: str, external_id: str) -> None:
         await self.conn.execute(

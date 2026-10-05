@@ -12,6 +12,20 @@ from pathlib import Path
 from ..models import EditDecision, Moment
 
 PUBLISH_DIR = Path("data/a_publier")
+PUBLISHED_DIR = Path("data/publie")  # kits publiés automatiquement
+
+
+def find_kit(moment_id: int) -> Path | None:
+    found = sorted(PUBLISH_DIR.glob(f"*_{moment_id:06d}_*.mp4"))
+    return found[0] if found else None
+
+
+def archive_kit(video: Path) -> None:
+    """Après publication automatique : déplace la vidéo et son texte dans data/publie/."""
+    PUBLISHED_DIR.mkdir(parents=True, exist_ok=True)
+    for f in (video, video.with_suffix(".txt")):
+        if f.exists():
+            shutil.move(str(f), PUBLISHED_DIR / f.name)
 CHANNEL_URLS = {"twitch": "https://twitch.tv/{}", "kick": "https://kick.com/{}"}
 
 # --- Linter de titre (title.py de youtube-agent-skill, MIT) ------------------------------

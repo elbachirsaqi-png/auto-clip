@@ -11,3 +11,4 @@ AutoClip.exe
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+AutoClip.new.exe

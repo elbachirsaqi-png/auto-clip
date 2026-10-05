@@ -32,7 +32,9 @@ from .monitor.detector import SpikeDetector
 from .monitor.kick import KickAPI, KickChat
 from .monitor.twitch import TwitchAPI, TwitchChat
 from .procutil import PID_FILE
-from .publish.kit import build_kit, description, tiktok_caption
+from .publish import channels
+from .publish.browser import NotLoggedIn, publish
+from .publish.kit import archive_kit, build_kit, description, find_kit, tiktok_caption
 from .render.hyperframes import LintError, Renderer, build_segments, remap_words
 from .review.telegram import COMMANDS, ReviewBot
 
@@ -41,6 +43,7 @@ log = logging.getLogger(__name__)
 WINDOW_S = 10  # taille d'une fenêtre d'activité du chat
 # Présent = pipeline en pause (/pause sur Telegram) ; survit à un redémarrage.
 PAUSE_FILE = Path("data/paused")
+PLATFORM_NAMES = {"youtube": "YouTube", "tiktok": "TikTok"}
 IDLE_SLEEP_S = 3
 
 Step = Callable[[Moment], Awaitable[None]]
@@ -73,6 +76,9 @@ class Pipeline:
         self.renderer = Renderer(settings.max_parallel_renders, settings.render_quality)
         self.review = ReviewBot(settings, self.on_review, self.on_command)
         self.started_at = time.time()
+        # Publication automatique : échecs par (moment, cible) et alertes déjà envoyées.
+        self.publish_failures: dict[tuple[int, str], tuple[int, float]] = {}
+        self.publish_alerts: set[str] = set()
         # login -> broadcaster_id / catégorie, remplis à chaque rafraîchissement.
         self.twitch_ids: dict[str, str] = {}
         self.twitch_games: dict[str, str] = {}
@@ -426,6 +432,15 @@ class Pipeline:
         video, _ = build_kit(m, decision, Path(m.render_path))
         self.discard_files(moment_id)  # la vidéo est dans le kit, le reste ne sert plus
         log.info("Kit de publication prêt : %s", video.name)
+        dest = channels.route(m)
+        if dest is not None and self.s.auto_publish and dest.platforms():
+            where = " + ".join(PLATFORM_NAMES[p] for p in dest.platforms())
+            await self.review.send_text(
+                f"🚀 #{moment_id} part en publication automatique sur « {dest.name} » ({where}).\n"
+                f"Titre : {decision.title}\n"
+                f"Au plus {dest.max_per_day} par jour, espacées de {dest.min_gap_minutes} min.")
+            return
+        # Pas de chaîne pour ce clip : publication à la main.
         # Deux messages séparés : un appui long pour copier chacun dans YouTube Studio.
         await self.review.send_text(f"📋 À publier (#{moment_id}) · YouTube : titre puis description")
         await self.review.send_text(decision.title)
@@ -433,6 +448,93 @@ class Pipeline:
         await self.review.send_text("🎵 TikTok : légende")
         await self.review.send_text(tiktok_caption(decision, m))
         await self.review.send_text(f"📁 Sur le PC : data/a_publier/{video.name}")
+
+    # --- Publication automatique -----------------------------------------------
+
+    def _slot_free(self, dest: channels.Destination, last: str | None, count: int) -> bool:
+        if count >= dest.max_per_day:
+            return False
+        if last is None:
+            return True
+        elapsed = (datetime.now(UTC) - datetime.fromisoformat(last)).total_seconds()
+        return elapsed >= dest.min_gap_minutes * 60
+
+    async def _alert_once(self, key: str, text: str) -> None:
+        if key not in self.publish_alerts:
+            self.publish_alerts.add(key)
+            try:
+                await self.review.send_text(text)
+            except Exception:  # noqa: BLE001
+                log.warning("Alerte Telegram non envoyée")
+
+    async def publish_next(self) -> bool:
+        """Publie au plus une vidéo approuvée (la plus ancienne dont la chaîne a un créneau libre)."""
+        dests = channels.load()
+        for m in await self.db.list_by_status(Status.APPROVED):
+            dest = channels.route(m, dests)
+            video = find_kit(m.id)
+            if dest is None or video is None:
+                continue  # publication manuelle
+            done = await self.db.published_targets(m.id)
+            todo = [p for p in dest.platforms() if f"{p}:{dest.id}" not in done]
+            if not todo:
+                await self.db.set_status(m.id, Status.PUBLISHED)
+                archive_kit(video)
+                continue
+            for platform in todo:
+                target = f"{platform}:{dest.id}"
+                if not dest.logged_in(platform):
+                    await self._alert_once(target, f"🔑 Connecte le profil {PLATFORM_NAMES[platform]} de "
+                                                   f"« {dest.name} » dans l'application (page Chaînes).")
+                    continue
+                fails, retry_at = self.publish_failures.get((m.id, target), (0, 0.0))
+                if fails >= 3 or time.time() < retry_at:
+                    continue
+                last, count = await self.db.target_activity(target)
+                if not self._slot_free(dest, last, count):
+                    continue
+                await self._publish_one(m, dest, platform, video)
+                return True
+        return False
+
+    async def _publish_one(self, m: Moment, dest, platform: str, video: Path) -> None:
+        decision = EditDecision.model_validate_json(m.decision_json)
+        target = f"{platform}:{dest.id}"
+        log.info("Publication de #%d sur %s (%s)…", m.id, platform, dest.name)
+        try:
+            url = await publish(dest, platform, video, title=decision.title,
+                                description=description(decision, m),
+                                caption=tiktok_caption(decision, m),
+                                headless=self.s.publish_headless)
+        except NotLoggedIn:
+            await self._alert_once(target, f"🔑 Le profil {PLATFORM_NAMES[platform]} de « {dest.name} » "
+                                           "est déconnecté : reconnecte-le dans l'application.")
+            return
+        except Exception as e:
+            fails = self.publish_failures.get((m.id, target), (0, 0.0))[0] + 1
+            self.publish_failures[(m.id, target)] = (fails, time.time() + 30 * 60)
+            log.exception("Publication de #%d sur %s échouée (%d/3)", m.id, platform, fails)
+            await self.review.send_text(
+                f"⚠️ Échec de publication #{m.id} sur {PLATFORM_NAMES[platform]} (« {dest.name} », "
+                f"essai {fails}/3"
+                + (", nouvel essai dans 30 min" if fails < 3 else ", publie-le à la main")
+                + f") :\n{str(e)[:500]}")
+            return
+        await self.db.record_publication(m.id, target, url or "")
+        log.info("Publié : #%d sur %s (%s) %s", m.id, platform, dest.name, url or "")
+        await self.review.send_text(
+            f"✅ Publié sur {PLATFORM_NAMES[platform]} (« {dest.name} »)"
+            + (f"\n{url}" if url else ""))
+
+    async def publish_loop(self) -> None:
+        while True:
+            await asyncio.sleep(60)
+            if self.paused or not self.s.auto_publish:
+                continue
+            try:
+                await self.publish_next()
+            except Exception:
+                log.exception("Boucle de publication")
 
     # --- Boucle générique -------------------------------------------------------
 
@@ -512,6 +614,7 @@ class Pipeline:
                 self.worker(Status.SOURCE_APPROVED, self.step_analyze),
                 self.worker(Status.ANALYZED, self.step_decide, uses_claude=True),
                 self.worker(Status.DECIDED, self.step_render, uses_claude=True),
+                self.publish_loop(),
             )
         finally:
             await self.http.aclose()
