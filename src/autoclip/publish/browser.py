@@ -118,13 +118,17 @@ async def _youtube(page: Page, video: Path, title: str, description: str, visibi
         arg=await done.element_handle(), timeout=UPLOAD_TIMEOUT_MS,
     )
     await done.click()
-    await page.locator("ytcp-video-share-dialog, ytcp-prechecks-warning-dialog").first.wait_for(
-        timeout=120_000)
+    # Réussi dès que la fenêtre d'envoi se ferme : YouTube affiche ensuite (ou pas, en privé)
+    # une fenêtre de partage, on ne s'y fie pas. Seul l'avertissement de vérification bloque.
     warning = page.locator("ytcp-prechecks-warning-dialog #publish-button")
-    if await warning.count():
-        await warning.first.click()  # « Publier quand même » après les vérifications
-    await _pause(page, 3000)
-    return url
+    for _ in range(60):
+        if await warning.count() and await warning.first.is_visible():
+            await warning.first.click()  # « Publier quand même » après les vérifications
+        if not await done.is_visible():
+            await _pause(page, 2000)
+            return url
+        await _pause(page, 2000)
+    raise PublishError("YouTube : la fenêtre d'envoi ne s'est pas fermée après « Publier »")
 
 
 # --- TikTok -------------------------------------------------------------------------------
