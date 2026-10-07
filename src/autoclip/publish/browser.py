@@ -10,8 +10,9 @@ En ligne de commande (utilisé par l'application) :
     python -m autoclip.publish.browser login <chaîne> <youtube|tiktok>
 """
 
-import asyncio
 import logging
+import os
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -208,29 +209,32 @@ async def publish(dest: Destination, platform: str, video: Path, *, title: str, 
             await ctx.close()
 
 
-async def login(dest: Destination, platform: str) -> bool:
-    """Ouvre Chrome avec le profil de la chaîne pour que tu te connectes ; ferme quand c'est fait."""
-    async with async_playwright() as pw:
-        ctx = await _open(dest, platform, headless=False, pw=pw)
-        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-        await page.goto(LOGIN_URLS[platform])
-        closed = asyncio.Event()
-        ctx.on("close", lambda _ctx: closed.set())
-        connected = False
-        for _ in range(900):  # 30 minutes maximum
-            if closed.is_set():
-                break
-            url = page.url if not page.is_closed() else ""
-            ok = ("studio.youtube.com" in url) if platform == "youtube" else (
-                "tiktok.com" in url and "/login" not in url)
-            if ok and not connected:
-                connected = True
-                (dest.profile_dir(platform) / ".connected").write_text(
-                    datetime.now().astimezone().isoformat())
-            await asyncio.sleep(2)
-        if not closed.is_set():
-            await ctx.close()
-        return connected
+def chrome_exe() -> str:
+    for base in (os.environ.get("PROGRAMFILES", ""), os.environ.get("PROGRAMFILES(X86)", ""),
+                 os.environ.get("LOCALAPPDATA", "")):
+        exe = Path(base) / "Google/Chrome/Application/chrome.exe"
+        if base and exe.exists():
+            return str(exe)
+    raise RuntimeError("Google Chrome introuvable")
+
+
+def login(dest: Destination, platform: str) -> bool:
+    """Ouvre ton vrai Chrome (non piloté) avec le profil de la chaîne ; rend la main à sa fermeture.
+
+    Google refuse de se connecter dans un Chrome piloté par Playwright (« navigateur non
+    sécurisé ») : la connexion se fait donc dans un Chrome normal, et la session enregistrée
+    dans le profil sert ensuite aux publications. La fenêtre reste ouverte tant que tu veux
+    (pratique aussi pour regarder des vidéos avec la chaîne avant de publier).
+    """
+    profile = dest.profile_dir(platform)
+    profile.mkdir(parents=True, exist_ok=True)
+    subprocess.run([chrome_exe(), f"--user-data-dir={profile.resolve()}", "--no-first-run",
+                    "--new-window", LOGIN_URLS[platform]], check=False)
+    # Chrome rend la main dès que la fenêtre est fermée. Une session = des cookies enregistrés.
+    connected = (profile / "Default" / "Network" / "Cookies").exists()
+    if connected:
+        (profile / ".connected").write_text(datetime.now().astimezone().isoformat())
+    return connected
 
 
 def main() -> None:
@@ -241,7 +245,7 @@ def main() -> None:
     if dest is None:
         print(f"Chaîne inconnue : {sys.argv[2]}")
         sys.exit(2)
-    ok = asyncio.run(login(dest, sys.argv[3]))
+    ok = login(dest, sys.argv[3])
     sys.exit(0 if ok else 1)
 
 
