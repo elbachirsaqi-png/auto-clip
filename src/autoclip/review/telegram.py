@@ -26,8 +26,8 @@ CommandCallback = Callable[[str], Awaitable[str]]
 
 COMMANDS = {
     "statut": "État du pipeline",
-    "pause": "Met en pause la surveillance et les montages",
-    "reprendre": "Relance la surveillance et les montages",
+    "pause": "Met en pause la surveillance (montages et publication continuent)",
+    "reprendre": "Relance la surveillance",
     "redemarrer": "Redémarre le pipeline (applique les nouveaux paramètres)",
     "aide": "Liste des commandes",
 }

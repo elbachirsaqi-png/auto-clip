@@ -168,15 +168,15 @@ class Pipeline:
             self.twitch_chat.set_channels(set())
             self.kick_chat.set_channels(set())
             log.info("Pipeline mis en pause depuis Telegram")
-            return ("⏸ Pause : plus de surveillance ni de nouveau montage.\n"
-                    "Un rendu déjà commencé se termine. Les boutons des vidéos reçues marchent "
-                    "toujours.\n/reprendre pour relancer.")
+            return ("⏸ Pause : plus de surveillance, donc plus de nouveaux clips.\n"
+                    "Les clips déjà détectés, les montages et la publication continuent.\n"
+                    "/reprendre pour relancer.")
         if command == "reprendre":
             if not self.paused:
                 return "▶ Le pipeline tourne déjà."
             PAUSE_FILE.unlink(missing_ok=True)
             log.info("Pipeline relancé depuis Telegram")
-            return "▶ C'est reparti : surveillance et montages relancés (chats rejoints sous 1 min)."
+            return "▶ C'est reparti : surveillance relancée (chats rejoints sous 1 min)."
         if command == "redemarrer":
             asyncio.get_running_loop().call_later(1, lambda: asyncio.ensure_future(self.restart()))
             return "🔄 Redémarrage du pipeline… (environ 30 s)"
@@ -541,7 +541,7 @@ class Pipeline:
     async def publish_loop(self) -> None:
         while True:
             await asyncio.sleep(60)
-            if self.paused or not self.s.auto_publish:
+            if not self.s.auto_publish:
                 continue
             try:
                 await self.publish_next()
@@ -581,9 +581,6 @@ class Pipeline:
                 sem.release()
 
         while True:
-            if self.paused:
-                await asyncio.sleep(IDLE_SLEEP_S)
-                continue
             if uses_claude and time.time() < self.claude_paused_until:
                 await asyncio.sleep(min(60, self.claude_paused_until - time.time() + 5))
                 continue
