@@ -49,6 +49,18 @@ IDLE_SLEEP_S = 3
 Step = Callable[[Moment], Awaitable[None]]
 
 
+async def supervised(name: str, factory: Callable[[], Awaitable[None]]) -> None:
+    """Relance une tâche de fond qui plante, au lieu de laisser tomber tout le pipeline."""
+    while True:
+        try:
+            await factory()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Tâche « %s » plantée, relance dans 10 s", name)
+        await asyncio.sleep(10)
+
+
 def folder_name(category: str | None) -> str:
     """Nom de dossier Windows valide pour une catégorie Twitch (« Just Chatting », jeux…)."""
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", category or "").strip(" .")
@@ -590,32 +602,31 @@ class Pipeline:
         await self.cleanup_work_dirs()
         if self.paused:
             log.info("Démarrage en pause (/reprendre sur Telegram pour relancer)")
-        kick_tasks = []
+        tasks = {
+            "chat Twitch": self.twitch_chat.run,
+            "streams Twitch": self.refresh_top_streams,
+            "détection": self.detect_loop,
+            "recherche des clips": lambda: self.worker(
+                Status.DETECTED, self.step_get_clip, self.s.max_clip_searches),
+            "téléchargement": lambda: self.worker(Status.CLIPPED, self.step_download),
+            "clips bruts": lambda: self.worker(
+                Status.DOWNLOADED, self.step_source_review if self.source_review else self.step_analyze),
+            "analyse": lambda: self.worker(Status.SOURCE_APPROVED, self.step_analyze),
+            "décision": lambda: self.worker(Status.ANALYZED, self.step_decide, uses_claude=True),
+            "montage": lambda: self.worker(Status.DECIDED, self.step_render, uses_claude=True),
+            "publication": self.publish_loop,
+        }
         if self.kick.enabled:
-            kick_tasks = [self.kick_chat.run(), self.refresh_kick_streams()]
+            tasks |= {"chat Kick": self.kick_chat.run, "streams Kick": self.refresh_kick_streams}
         else:
             log.info("Kick désactivé (identifiants absents ou KICK_ENABLED=false)")
-        review_tasks = []
         if self.review.enabled:
-            review_tasks = [self.review.run(), self.worker(Status.RENDERED, self.step_review)]
+            tasks |= {"Telegram": self.review.run,
+                      "envoi des rendus": lambda: self.worker(Status.RENDERED, self.step_review)}
         else:
             log.warning("Telegram non configuré : les rendus resteront au statut rendered")
         try:
-            await asyncio.gather(
-                *review_tasks,
-                *kick_tasks,
-                self.twitch_chat.run(),
-                self.refresh_top_streams(),
-                self.detect_loop(),
-                self.worker(Status.DETECTED, self.step_get_clip, self.s.max_clip_searches),
-                self.worker(Status.CLIPPED, self.step_download),
-                self.worker(Status.DOWNLOADED,
-                            self.step_source_review if self.source_review else self.step_analyze),
-                self.worker(Status.SOURCE_APPROVED, self.step_analyze),
-                self.worker(Status.ANALYZED, self.step_decide, uses_claude=True),
-                self.worker(Status.DECIDED, self.step_render, uses_claude=True),
-                self.publish_loop(),
-            )
+            await asyncio.gather(*(supervised(name, f) for name, f in tasks.items()))
         finally:
             await self.http.aclose()
             await self.review.close()

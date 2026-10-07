@@ -56,3 +56,23 @@ async def test_only_validation_chat_can_send_commands():
     assert received == ["pause", "aide"]
     assert sent == ["ok", "ok"]
     await bot.close()
+
+
+async def test_supervised_restarts_a_crashed_task(monkeypatch):
+    import asyncio
+
+    runs = []
+
+    async def flaky():
+        runs.append(1)
+        if len(runs) == 1:
+            raise RuntimeError("réseau coupé")
+        raise asyncio.CancelledError  # 2e passage : on arrête le test
+
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(pl.asyncio, "sleep", lambda s: real_sleep(0))
+    try:
+        await pl.supervised("test", flaky)
+    except asyncio.CancelledError:
+        pass
+    assert len(runs) == 2  # relancée après le plantage au lieu de tout arrêter

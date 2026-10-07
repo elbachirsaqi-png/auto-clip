@@ -34,6 +34,10 @@ def main() -> None:
         asyncio.run(Pipeline(settings).run())
     except KeyboardInterrupt:
         pass
+    except Exception:
+        # Lancé par l'application, la sortie d'erreur n'est lue par personne : on la journalise.
+        logging.getLogger("autoclip").exception("Le pipeline s'est arrêté sur une erreur")
+        raise
     finally:
         PID_FILE.unlink(missing_ok=True)
 
