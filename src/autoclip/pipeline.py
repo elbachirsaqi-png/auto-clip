@@ -33,7 +33,7 @@ from .monitor.kick import KickAPI, KickChat
 from .monitor.twitch import TwitchAPI, TwitchChat
 from .procutil import PID_FILE
 from .publish import channels
-from .publish.browser import NotLoggedIn, publish
+from .publish.browser import ChecksPending, NotLoggedIn, publish
 from .publish.kit import archive_kit, build_kit, description, find_kit, tiktok_caption
 from .render.hyperframes import LintError, Renderer, build_segments, remap_words
 from .review.telegram import COMMANDS, ReviewBot
@@ -521,6 +521,14 @@ class Pipeline:
         except NotLoggedIn:
             await self._alert_once(target, f"🔑 Le profil {PLATFORM_NAMES[platform]} de « {dest.name} » "
                                            "est déconnecté : reconnecte-le dans l'application.")
+            return
+        except ChecksPending:
+            # La vidéo existe déjà en brouillon privé : un nouvel essai en créerait un doublon.
+            await self.db.record_publication(m.id, target, "brouillon-prive")
+            await self.review.send_text(
+                f"⏳ #{m.id} est en brouillon privé sur YouTube (« {dest.name} ») : les vérifications "
+                f"de YouTube n'étaient pas finies après 10 min.\n"
+                f"Publie-la à la main dans YouTube Studio quand elles sont terminées : {decision.title}")
             return
         except Exception as e:
             fails = self.publish_failures.get((m.id, target), (0, 0.0))[0] + 1

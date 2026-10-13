@@ -95,3 +95,46 @@ async def test_publish_queue_spacing_and_retry(tmp_path, monkeypatch):
         await p.db.close()
         await p.http.aclose()
         await p.review.close()
+
+
+async def test_checks_pending_keeps_draft_without_retry(tmp_path, monkeypatch):
+    from autoclip.publish.browser import ChecksPending
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pl, "PAUSE_FILE", tmp_path / "paused")
+    dest = channels.Destination(id="streamers", name="Streamers", streamers=["kaicenat"], tiktok=False)
+    channels.save([dest])
+    dest.profile_dir("youtube").mkdir(parents=True)
+    (dest.profile_dir("youtube") / ".connected").write_text("ok")
+    p = pl.Pipeline(Settings(_env_file=None, db_path=tmp_path / "t.db", work_dir=tmp_path / "w"))
+    await p.db.connect()
+    sent, calls = [], []
+
+    async def fake_send(text):
+        sent.append(text)
+
+    async def fake_publish(*_a, **_kw):
+        calls.append(1)
+        raise ChecksPending("vérifications en cours")
+
+    p.review.send_text = fake_send
+    monkeypatch.setattr(pl, "publish", fake_publish)
+    decision = EditDecision(keep=True, reason="", cuts=[{"start_s": 0, "end_s": 20}], hook="h",
+                            creative_direction="", highlight_words=[], title="Kai wins", hashtags=[])
+    try:
+        m = moment()
+        m.id = await p.db.insert_moment(m)
+        await p.db.advance(m, Status.APPROVED, decision_json=decision.model_dump_json())
+        video = tmp_path / "final.mp4"
+        video.write_bytes(b"x")
+        kit.build_kit(m, decision, video)
+
+        assert await p.publish_next()
+        assert "brouillon privé" in sent[-1]
+        assert not await p.publish_next()  # jamais renvoyée : pas de doublon
+        assert len(calls) == 1
+        assert await p.db.published_targets(m.id) == {"youtube:streamers"}
+    finally:
+        await p.db.close()
+        await p.http.aclose()
+        await p.review.close()

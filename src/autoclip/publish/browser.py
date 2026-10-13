@@ -12,6 +12,7 @@ En ligne de commande (utilisé par l'application) :
 
 import logging
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -38,6 +39,10 @@ class NotLoggedIn(Exception):
 
 class PublishError(Exception):
     pass
+
+
+class ChecksPending(Exception):
+    """YouTube n'a pas fini ses vérifications : la vidéo reste en brouillon privé dans Studio."""
 
 
 async def _open(dest: Destination, platform: str, headless: bool, pw) -> BrowserContext:
@@ -118,17 +123,20 @@ async def _youtube(page: Page, video: Path, title: str, description: str, visibi
         arg=await done.element_handle(), timeout=UPLOAD_TIMEOUT_MS,
     )
     await done.click()
-    # Réussi dès que la fenêtre d'envoi se ferme : YouTube affiche ensuite (ou pas, en privé)
-    # une fenêtre de partage, on ne s'y fie pas. Seul l'avertissement de vérification bloque.
-    warning = page.locator("ytcp-prechecks-warning-dialog #publish-button")
-    for _ in range(60):
-        if await warning.count() and await warning.first.is_visible():
-            await warning.first.click()  # « Publier quand même » après les vérifications
+    # Réussi dès que la fenêtre d'envoi se ferme (fenêtre de partage ou pas, selon la visibilité).
+    # « Vérifications en cours » : on suit la recommandation de YouTube, jamais « Publier quand
+    # même » (risque d'avertissement) : on ferme, on attend, on réessaie.
+    checking = page.get_by_text(re.compile(r"Publier quand même|Publish anyway"))
+    for _ in range(300):  # 10 minutes
         if not await done.is_visible():
             await _pause(page, 2000)
             return url
+        if await checking.count() and await checking.first.is_visible():
+            await page.keyboard.press("Escape")
+            await _pause(page, 60_000)
+            await done.click()
         await _pause(page, 2000)
-    raise PublishError("YouTube : la fenêtre d'envoi ne s'est pas fermée après « Publier »")
+    raise ChecksPending("YouTube : vérifications toujours en cours après 10 min")
 
 
 # --- TikTok -------------------------------------------------------------------------------
@@ -202,6 +210,8 @@ async def publish(dest: Destination, platform: str, video: Path, *, title: str, 
             return await _tiktok(page, video, caption, dry_run)
         except NotLoggedIn:
             (dest.profile_dir(platform) / ".connected").unlink(missing_ok=True)
+            raise
+        except ChecksPending:
             raise
         except Exception as e:
             shot = await _screenshot(page, f"{dest.id}-{platform}")
