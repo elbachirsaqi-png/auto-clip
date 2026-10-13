@@ -127,8 +127,12 @@ async def _youtube(page: Page, video: Path, title: str, description: str, visibi
     # « Vérifications en cours » : on suit la recommandation de YouTube, jamais « Publier quand
     # même » (risque d'avertissement) : on ferme, on attend, on réessaie.
     checking = page.get_by_text(re.compile(r"Publier quand même|Publish anyway"))
+    # En public, la fenêtre « Vidéo publiée » s'ouvre PAR-DESSUS la fenêtre d'envoi.
+    published = page.locator("ytcp-video-share-dialog").or_(
+        page.get_by_text(re.compile(r"Vidéo publiée|Video published|Short publié|Short published")))
     for _ in range(300):  # 10 minutes
-        if not await done.is_visible():
+        if not await done.is_visible() or (
+                await published.count() and await published.first.is_visible()):
             await _pause(page, 2000)
             return url
         if await checking.count() and await checking.first.is_visible():
@@ -212,6 +216,7 @@ async def publish(dest: Destination, platform: str, video: Path, *, title: str, 
             (dest.profile_dir(platform) / ".connected").unlink(missing_ok=True)
             raise
         except ChecksPending:
+            await _screenshot(page, f"{dest.id}-{platform}-brouillon")  # pour vérifier l'état réel
             raise
         except Exception as e:
             shot = await _screenshot(page, f"{dest.id}-{platform}")

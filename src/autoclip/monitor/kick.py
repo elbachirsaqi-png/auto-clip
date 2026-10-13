@@ -23,7 +23,10 @@ log = logging.getLogger(__name__)
 
 API = "https://api.kick.com/public"
 SITE_API = "https://kick.com/api/v2"
-PUSHER_URL = "wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0&flash=false"
+# Configuration du chat (clé Pusher) : Kick la change sans prévenir, on la redemande à chaque
+# connexion. Valeurs de secours si l'API ne répond pas (relevées le 13/10/2026).
+REALTIME_URL = "https://web.kick.com/api/v1/realtime/channels/668/chat/connection"
+PUSHER_FALLBACK = ("34bf7a0ff419a2a775b9", "us2")
 # kick.com refuse les requêtes sans en-têtes de navigateur.
 BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -161,10 +164,25 @@ class KickChat:
             await self._ws.send(json.dumps({"event": "pusher:unsubscribe",
                                             "data": {"channel": f"chatrooms.{room}.v2"}}))
 
+    async def _pusher_url(self) -> str:
+        key, cluster = PUSHER_FALLBACK
+        try:
+            r = await self.api.http.post(REALTIME_URL, headers=BROWSER_HEADERS, json={
+                "client": {"id": "autoclip", "type": "web"},
+                "capabilities": {"accepted_providers": [{"provider": "pusher"}]},
+            })
+            r.raise_for_status()
+            creds = next(c["credentials"] for c in r.json()["data"]["connections"]
+                         if c["provider"] == "pusher")
+            key, cluster = creds["app_key"], creds["cluster"]
+        except Exception as e:  # noqa: BLE001  (API indisponible : valeurs de secours)
+            log.warning("Configuration du chat Kick indisponible (%s), clé de secours", type(e).__name__)
+        return f"wss://ws-{cluster}.pusher.com/app/{key}?protocol=7&client=js&version=8.4.0&flash=false"
+
     async def run(self) -> None:
         while True:
             try:
-                async with websockets.connect(PUSHER_URL) as ws:
+                async with websockets.connect(await self._pusher_url()) as ws:
                     self._ws, self._joined, self._rooms = ws, {}, {}
                     sync = asyncio.create_task(self._sync_loop())
                     try:
