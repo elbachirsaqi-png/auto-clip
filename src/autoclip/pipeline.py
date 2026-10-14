@@ -418,6 +418,13 @@ class Pipeline:
 
     async def on_review(self, moment_id: int, approved: bool, stage: str = "final") -> bool:
         applied = await self.db.set_review_result(moment_id, approved, stage)
+        if applied and stage == "redo":
+            # Sans l'ancienne composition, l'étape de montage en redemande une neuve à Claude.
+            for d in self.moment_dirs(moment_id):
+                shutil.rmtree(d / "render", ignore_errors=True)
+                (d / "final.mp4").unlink(missing_ok=True)
+            log.info("Moment #%d : remontage demandé sur Telegram", moment_id)
+            return applied
         if applied:
             if stage == "source":
                 log.info("Clip #%d %s sur Telegram", moment_id,

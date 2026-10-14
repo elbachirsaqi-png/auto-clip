@@ -79,3 +79,14 @@ async def test_old_database_gets_category_column(tmp_path):
         await new_moment(database)
     finally:
         await database.close()
+
+
+async def test_redo_sends_video_back_to_editing(db):
+    m = await new_moment(db)
+    await db.advance(m, Status.PENDING_REVIEW, render_path="final.mp4")
+    assert await db.set_review_result(m.id, approved=True, stage="redo") is True
+    assert (await db.statuses())[m.id] == Status.DECIDED.value
+    assert (await db.get(m.id)).render_path is None
+    # Un 2e clic (ou « Publier » sur l'ancien message) ne fait plus rien.
+    assert await db.set_review_result(m.id, approved=True, stage="redo") is False
+    assert await db.set_review_result(m.id, approved=True, stage="final") is False

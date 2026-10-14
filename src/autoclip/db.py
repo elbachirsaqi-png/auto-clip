@@ -143,8 +143,17 @@ class Database:
     async def set_review_result(self, moment_id: int, approved: bool, stage: str = "final") -> bool:
         """Applique le verdict Telegram. False si le moment n'attendait plus de validation.
 
-        stage = "source" (clip brut : part au montage ou non) ou "final" (vidéo montée).
+        stage = "source" (clip brut : part au montage ou non), "final" (vidéo montée) ou
+        "redo" (vidéo montée à refaire : retour à l'étape de montage).
         """
+        if stage == "redo":
+            cur = await self.conn.execute(
+                "UPDATE moments SET status = ?, render_path = NULL, attempts = 0, locked = 0, "
+                "error = NULL, updated_at = ? WHERE id = ? AND status = ?",
+                (Status.DECIDED.value, _now(), moment_id, Status.PENDING_REVIEW.value),
+            )
+            await self.conn.commit()
+            return cur.rowcount == 1
         if stage == "source":
             waiting, ok, label = Status.SOURCE_PENDING, Status.SOURCE_APPROVED, "Clip ignoré sur Telegram"
         else:

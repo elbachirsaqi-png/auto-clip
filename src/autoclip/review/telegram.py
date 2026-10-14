@@ -35,6 +35,7 @@ COMMANDS = {
 ACTIONS = {
     "approve": (True, "final"), "reject": (False, "final"),
     "srcok": (True, "source"), "srcno": (False, "source"),
+    "redo": (True, "redo"),
 }
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # limite d'envoi de fichiers pour un bot
@@ -94,6 +95,7 @@ class ReviewBot:
         ])[:1024]
         keyboard = {"inline_keyboard": [[
             {"text": "✅ Publier", "callback_data": f"approve:{moment_id}"},
+            {"text": "🔁 Remonter", "callback_data": f"redo:{moment_id}"},
             {"text": "❌ Rejeter", "callback_data": f"reject:{moment_id}"},
         ]]}
         await self._send_video(video, caption, keyboard)
@@ -170,7 +172,9 @@ class ReviewBot:
         approved, stage = ACTIONS[action]
         applied = await self.on_decision(int(raw_id), approved, stage)
 
-        if applied and stage == "source":
+        if applied and stage == "redo":
+            verdict = "🔁 Remontage en cours : la nouvelle version arrive ici"
+        elif applied and stage == "source":
             verdict = "🎬 Part au montage" if approved else "🗑 Ignoré (fichiers supprimés)"
         elif applied:
             verdict = "✅ Approuvé" if approved else "❌ Rejeté (fichiers supprimés)"
