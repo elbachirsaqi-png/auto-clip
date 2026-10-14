@@ -17,14 +17,18 @@ def test_routing_by_streamer_then_category():
     assert channels.route(moment("KaiCenat", "Grand Theft Auto V"), dests).id == "streamers"
     assert channels.route(moment("random", "Just Chatting"), dests).id == "streamers"
     assert channels.route(moment("random", "IRL"), dests).id == "streamers"
-    # Counter-Strike et GTA 6 sont prêtes mais désactivées tant que les chaînes n'existent pas.
+    # Counter-Strike et GTA 6 sont prêtes mais désactivées : leurs clips attendent leur
+    # chaîne au lieu de partir sur la chaîne par défaut.
     assert channels.route(moment("eslcs", "Counter-Strike"), dests) is None
     dests[1].enabled = True
     assert channels.route(moment("eslcs", "Counter-Strike"), dests).id == "counter-strike"
     assert channels.route(moment("x", "Grand Theft Auto VI"), dests) is None
     dests[2].enabled = True
     assert channels.route(moment("x", "Grand Theft Auto VI"), dests).id == "gta6"
-    assert channels.route(moment("x", "Grand Theft Auto V (GTA)"), dests) is None  # pas GTA 5
+    assert channels.route(moment("x", "Grand Theft Auto V (GTA)"), dests).id == "streamers"  # pas GTA 6
+    # Catégorie prévue nulle part : chaîne par défaut (Streamers).
+    assert channels.route(moment("payo", "World of Warcraft"), dests).id == "streamers"
+    dests[0].fallback = False
     assert channels.route(moment("payo", "World of Warcraft"), dests) is None
 
 

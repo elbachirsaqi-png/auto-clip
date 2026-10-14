@@ -32,9 +32,11 @@ class Destination(BaseModel):
     youtube_visibility: str = "public"  # public, unlisted, private
     max_per_day: int = 3  # par plateforme
     min_gap_minutes: int = 120  # entre deux publications sur la même plateforme
+    # Chaîne par défaut : reçoit les clips dont aucune chaîne ne prévoit la catégorie.
+    fallback: bool = False
 
-    def matches(self, m: Moment) -> bool:
-        if not self.enabled:
+    def matches(self, m: Moment, ignore_enabled: bool = False) -> bool:
+        if not (self.enabled or ignore_enabled):
             return False
         if m.channel.lower() in {s.lower() for s in self.streamers}:
             return True
@@ -52,7 +54,7 @@ class Destination(BaseModel):
 
 
 DEFAULTS = [
-    Destination(id="streamers", name="Streamers connus",
+    Destination(id="streamers", name="Streamers connus", fallback=True,
                 streamers=["kaicenat", "clavicular"], categories=["IRL", "Just Chatting"]),
     Destination(id="counter-strike", name="Counter-Strike", enabled=False,
                 categories=["Counter-Strike"]),
@@ -79,10 +81,14 @@ def save(destinations: list[Destination]) -> None:
 
 def route(m: Moment, destinations: list[Destination] | None = None) -> Destination | None:
     """La chaîne qui publiera ce clip, ou None (publication manuelle)."""
-    for d in destinations if destinations is not None else load():
+    dests = destinations if destinations is not None else load()
+    for d in dests:
         if d.matches(m):
             return d
-    return None
+    # Prévu pour une chaîne pas encore active (ex. GTA 6) : il attend sa chaîne.
+    if any(d.matches(m, ignore_enabled=True) for d in dests):
+        return None
+    return next((d for d in dests if d.fallback and d.enabled), None)
 
 
 def slugify(name: str) -> str:

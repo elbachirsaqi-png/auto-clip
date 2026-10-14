@@ -676,6 +676,9 @@ class ChannelsPage(ctk.CTkFrame):
         row["enabled"] = tk.BooleanVar(value=d.enabled)
         ctk.CTkSwitch(top, text="Active", variable=row["enabled"], progress_color=ACCENT,
                       font=font(13)).pack(side="left", padx=16)
+        row["fallback"] = tk.BooleanVar(value=d.fallback)
+        ctk.CTkSwitch(top, text="Par défaut (catégories non prévues)", variable=row["fallback"],
+                      progress_color=ACCENT, font=font(13)).pack(side="left")
         ctk.CTkButton(top, text="Supprimer", width=90, height=30, font=font(12), fg_color=PANEL,
                       hover_color=RED, command=lambda r=row: self.remove(r)).pack(side="right")
 
@@ -734,7 +737,8 @@ class ChannelsPage(ctk.CTkFrame):
                 youtube=r["youtube"].get(), tiktok=r["tiktok"].get(),
                 youtube_visibility=r["youtube_visibility"].get(),
                 max_per_day=int(r["max_per_day"].get() or 0),
-                min_gap_minutes=int(r["min_gap_minutes"].get() or 0)))
+                min_gap_minutes=int(r["min_gap_minutes"].get() or 0),
+                fallback=r["fallback"].get()))
         return dests
 
     def save(self, quiet=False):
