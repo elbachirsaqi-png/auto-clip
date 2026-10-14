@@ -196,11 +196,20 @@ class Pipeline:
         waiting = counts.get("source_pending", 0) + counts.get("pending_review", 0)
         in_progress = sum(counts.get(s, 0) for s in
                           ("source_approved", "analyzed", "decided", "rendered"))
+        async with self.db.conn.execute(
+            "SELECT substr(target, 1, instr(target, ':') - 1), count(*) FROM publications "
+            "WHERE external_id != 'brouillon-prive' GROUP BY 1"
+        ) as cur:
+            published = dict(await cur.fetchall())
+        dests = channels.load()
+        approved = await self.db.list_by_status(Status.APPROVED)
+        auto = sum(1 for m in approved if channels.route(m, dests) and find_kit(m.id))
         return (f"{state} depuis {uptime // 60} h {uptime % 60:02d}\n"
                 f"Surveillés : {twitch} Twitch · {kick} Kick\n"
                 f"À valider sur Telegram : {waiting}\n"
                 f"En cours de montage : {in_progress}\n"
-                f"Vidéos approuvées : {counts.get('approved', 0)}")
+                f"En attente de publication : {auto} auto · {len(approved) - auto} à la main\n"
+                f"Publiées : {published.get('youtube', 0)} YouTube · {published.get('tiktok', 0)} TikTok")
 
     async def restart(self) -> None:
         """Relance un nouveau pipeline puis arrête celui-ci (et ses rendus en cours)."""

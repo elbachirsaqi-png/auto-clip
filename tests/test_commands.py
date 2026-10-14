@@ -29,6 +29,8 @@ async def test_status_and_help(tmp_path, monkeypatch):
     try:
         status = await p.on_command("statut")
         assert status.startswith("▶ En marche") and "À valider sur Telegram : 0" in status
+        assert "En attente de publication : 0 auto · 0 à la main" in status
+        assert "Publiées : 0 YouTube · 0 TikTok" in status
         assert "/redemarrer" in await p.on_command("aide")
     finally:
         await p.db.close()
