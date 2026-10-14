@@ -130,7 +130,7 @@ async def _youtube(page: Page, video: Path, title: str, description: str, visibi
     # En public, la fenêtre « Vidéo publiée » s'ouvre PAR-DESSUS la fenêtre d'envoi.
     published = page.locator("ytcp-video-share-dialog").or_(
         page.get_by_text(re.compile(
-            r"(Vidéo|Short) (publiée?|mise? en ligne)|(Video|Short) (published|uploaded)", re.I)))
+            r"(Vidéo|Short) (publiée?|mise? en ligne)|(Video|Short) (published|uploaded)", re.IGNORECASE)))
     for _ in range(300):  # 10 minutes
         if not await done.is_visible() or (
                 await published.count() and await published.first.is_visible()):
