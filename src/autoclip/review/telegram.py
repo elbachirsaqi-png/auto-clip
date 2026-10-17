@@ -29,6 +29,7 @@ COMMANDS = {
     "pause": "Met en pause la surveillance (montages et publication continuent)",
     "reprendre": "Relance la surveillance",
     "redemarrer": "Redémarre le pipeline (applique les nouveaux paramètres)",
+    "publiee": "Signale une vidéo déjà publiée à la main : /publiee 399 tiktok",
     "aide": "Liste des commandes",
 }
 
@@ -154,10 +155,11 @@ class ReviewBot:
         text = (message.get("text") or "").strip()
         if not text.startswith("/") or self.on_command is None:
             return
-        command = text[1:].split()[0].split("@")[0].lower()  # « /pause@SQClip_bot » -> pause
+        command, *args = text[1:].split()
+        command = command.split("@")[0].lower()  # « /pause@SQClip_bot » -> pause
         if command not in COMMANDS:
             command = "aide"
-        await self.send_text(await self.on_command(command))
+        await self.send_text(await self.on_command(command, args))
 
     async def _handle_click(self, query: dict) -> None:
         message = query.get("message") or {}

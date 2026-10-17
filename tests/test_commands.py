@@ -40,7 +40,7 @@ async def test_status_and_help(tmp_path, monkeypatch):
 async def test_only_validation_chat_can_send_commands():
     received, sent = [], []
 
-    async def on_command(cmd):
+    async def on_command(cmd, args=None):
         received.append(cmd)
         return "ok"
 

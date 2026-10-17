@@ -159,7 +159,7 @@ class Pipeline:
     def paused(self) -> bool:
         return PAUSE_FILE.exists()
 
-    async def on_command(self, command: str) -> str:
+    async def on_command(self, command: str, args: list[str] | None = None) -> str:
         """Commandes Telegram : /statut, /pause, /reprendre, /redemarrer, /aide."""
         if command == "pause":
             if self.paused:
@@ -180,9 +180,41 @@ class Pipeline:
         if command == "redemarrer":
             asyncio.get_running_loop().call_later(1, lambda: asyncio.ensure_future(self.restart()))
             return "🔄 Redémarrage du pipeline… (environ 30 s)"
+        if command == "publiee":
+            return await self.mark_published(args or [])
         if command == "statut":
             return await self.status_text()
         return "Commandes :\n" + "\n".join(f"/{c} — {d}" for c, d in COMMANDS.items())
+
+    async def mark_published(self, args: list[str]) -> str:
+        """/publiee <numéro> [youtube|tiktok] : la vidéo a été publiée à la main, ne pas la reposter."""
+        if not args or not args[0].lstrip("#").isdigit():
+            return "Usage : /publiee 399 (partout) ou /publiee 399 tiktok"
+        moment_id = int(args[0].lstrip("#"))
+        m = await self.db.get(moment_id)
+        if m is None:
+            return f"Vidéo #{moment_id} introuvable."
+        dest = channels.route(m)
+        wanted = [a.lower() for a in args[1:]]
+        if any(p not in PLATFORM_NAMES for p in wanted):
+            return "Plateforme inconnue : youtube ou tiktok."
+        platforms = wanted or list(PLATFORM_NAMES)
+        done = await self.db.published_targets(moment_id)
+        dest_id = dest.id if dest else "manuel"
+        for p in platforms:
+            if f"{p}:{dest_id}" not in done:
+                await self.db.record_publication(moment_id, f"{p}:{dest_id}", "manuel")
+        remaining = [p for p in (dest.platforms() if dest else []) if p not in platforms
+                     and f"{p}:{dest_id}" not in done]
+        if not remaining:
+            await self.db.set_status(moment_id, Status.PUBLISHED)
+            video = find_kit(moment_id)
+            if video:
+                archive_kit(video)
+        names = " + ".join(PLATFORM_NAMES[p] for p in platforms)
+        rest = (f" Reste en publication auto : {', '.join(PLATFORM_NAMES[p] for p in remaining)}."
+                if remaining else "")
+        return f"✅ #{moment_id} noté publié à la main sur {names} : pas de nouvel envoi.{rest}"
 
     async def status_text(self) -> str:
         counts = await self.db.status_counts()
