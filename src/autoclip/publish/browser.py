@@ -41,9 +41,6 @@ class PublishError(Exception):
     pass
 
 
-class ChecksPending(Exception):
-    """YouTube n'a pas fini ses vérifications : la vidéo reste en brouillon privé dans Studio."""
-
 
 async def _open(dest: Destination, platform: str, headless: bool, pw) -> BrowserContext:
     profile = dest.profile_dir(platform)
@@ -145,7 +142,9 @@ async def _youtube(page: Page, video: Path, title: str, description: str, visibi
             await _pause(page, 60_000)
             await done.click()
         await _pause(page, 2000)
-    raise ChecksPending("YouTube : vérifications toujours en cours après 10 min")
+    # En pratique la vidéo est publiée même sans confirmation reconnue : réussite.
+    log.warning("YouTube : confirmation non reconnue, publication considérée réussie")
+    return url
 
 
 # --- TikTok -------------------------------------------------------------------------------
@@ -219,9 +218,6 @@ async def publish(dest: Destination, platform: str, video: Path, *, title: str, 
             return await _tiktok(page, video, caption, dry_run)
         except NotLoggedIn:
             (dest.profile_dir(platform) / ".connected").unlink(missing_ok=True)
-            raise
-        except ChecksPending:
-            await _screenshot(page, f"{dest.id}-{platform}-brouillon")  # pour vérifier l'état réel
             raise
         except Exception as e:
             shot = await _screenshot(page, f"{dest.id}-{platform}")

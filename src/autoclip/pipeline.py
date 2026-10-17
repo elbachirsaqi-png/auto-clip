@@ -33,7 +33,7 @@ from .monitor.kick import KickAPI, KickChat
 from .monitor.twitch import TwitchAPI, TwitchChat
 from .procutil import PID_FILE
 from .publish import channels
-from .publish.browser import ChecksPending, NotLoggedIn, publish
+from .publish.browser import NotLoggedIn, publish
 from .publish.kit import archive_kit, build_kit, description, find_kit, tiktok_caption
 from .render.hyperframes import LintError, Renderer, build_segments, remap_words
 from .review.telegram import COMMANDS, ReviewBot
@@ -467,6 +467,11 @@ class Pipeline:
                 f"🚀 #{moment_id} part en publication automatique sur « {dest.name} » ({where}).\n"
                 f"Titre : {decision.title}\n"
                 f"Au plus {dest.max_per_day} par jour, espacées de {dest.min_gap_minutes} min.")
+            if "tiktok" not in dest.platforms():
+                await self.review.send_text(
+                    "🎵 TikTok à poster depuis ton téléphone : enregistre la vidéo ci-dessus, "
+                    "puis colle la légende :")
+                await self.review.send_text(tiktok_caption(decision, m))
             return
         # Pas de chaîne pour ce clip : publication à la main.
         # Deux messages séparés : un appui long pour copier chacun dans YouTube Studio.
@@ -537,14 +542,6 @@ class Pipeline:
         except NotLoggedIn:
             await self._alert_once(target, f"🔑 Le profil {PLATFORM_NAMES[platform]} de « {dest.name} » "
                                            "est déconnecté : reconnecte-le dans l'application.")
-            return
-        except ChecksPending:
-            # La vidéo existe déjà en brouillon privé : un nouvel essai en créerait un doublon.
-            await self.db.record_publication(m.id, target, "brouillon-prive")
-            await self.review.send_text(
-                f"⏳ #{m.id} est en brouillon privé sur YouTube (« {dest.name} ») : les vérifications "
-                f"de YouTube n'étaient pas finies après 10 min.\n"
-                f"Publie-la à la main dans YouTube Studio quand elles sont terminées : {decision.title}")
             return
         except Exception as e:
             fails = self.publish_failures.get((m.id, target), (0, 0.0))[0] + 1
