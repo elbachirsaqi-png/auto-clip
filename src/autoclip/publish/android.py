@@ -91,6 +91,13 @@ def publish_tiktok(video: Path, caption: str, serial: str = "", dry_run: bool = 
     field.click()
     d.send_keys(caption, clear=True)
     time.sleep(2)
+    # Après un hashtag, TikTok ouvre une liste de suggestions (« #twitch · 40.7M posts ») qui
+    # recouvre les boutons du bas : on touche la première suggestion, ce qui la ferme.
+    for _ in range(3):
+        if not d(textMatches=r"(?i)^[\d.,]+\s*[KMB]?\s*(posts|publications|vidéos|videos)$").exists:
+            break
+        d(textMatches=r"^#\S+$", className="android.widget.TextView").click()
+        time.sleep(1.5)
     if "mInputShown=true" in d.shell(["dumpsys", "input_method"]).output:
         d.press("back")  # le clavier cache les boutons du bas : Retour le ferme d'abord
         time.sleep(1.5)
