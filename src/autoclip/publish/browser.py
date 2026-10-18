@@ -10,6 +10,7 @@ En ligne de commande (utilisé par l'application) :
     python -m autoclip.publish.browser login <chaîne> <youtube|tiktok>
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -208,6 +209,14 @@ async def _tiktok(page: Page, video: Path, caption: str, dry_run: bool) -> str |
 async def publish(dest: Destination, platform: str, video: Path, *, title: str, description: str,
                   caption: str, headless: bool = False, dry_run: bool = False) -> str | None:
     """Publie la vidéo sur la plateforme de cette chaîne. Retourne l'URL si connue."""
+    if platform == "tiktok" and dest.tiktok_via == "android":
+        from .android import publish_tiktok
+
+        try:
+            await asyncio.to_thread(publish_tiktok, video, caption, dry_run=dry_run)
+        except Exception as e:
+            raise PublishError(f"tiktok (téléphone) / {dest.name} : {e}"[:400]) from e
+        return None
     async with async_playwright() as pw:
         ctx = await _open(dest, platform, headless, pw)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()

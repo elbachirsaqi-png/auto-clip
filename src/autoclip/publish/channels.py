@@ -30,6 +30,7 @@ class Destination(BaseModel):
     youtube: bool = True
     tiktok: bool = True
     youtube_visibility: str = "public"  # public, unlisted, private
+    tiktok_via: str = "pc"  # pc (Chrome) ou android (téléphone branché, application TikTok)
     max_per_day: int = 3  # par plateforme
     min_gap_minutes: int = 120  # entre deux publications sur la même plateforme
     # Chaîne par défaut : reçoit les clips dont aucune chaîne ne prévoit la catégorie.
@@ -50,6 +51,8 @@ class Destination(BaseModel):
         return PROFILES_DIR / f"{self.id}-{platform}"
 
     def logged_in(self, platform: str) -> bool:
+        if platform == "tiktok" and self.tiktok_via == "android":
+            return True  # le compte est celui de l'application TikTok du téléphone
         return (self.profile_dir(platform) / ".connected").exists()
 
 
