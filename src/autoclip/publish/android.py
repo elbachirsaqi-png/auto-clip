@@ -76,7 +76,8 @@ def publish_tiktok(video: Path, caption: str, serial: str = "", dry_run: bool = 
     d.unlock()  # glisse l'écran de verrouillage (sans code)
     d.shell(["rm", "-rf", REMOTE_DIR])  # vidéos des publications précédentes
     d.shell(["mkdir", "-p", REMOTE_DIR])
-    remote = f"{REMOTE_DIR}/{video.name.replace(' ', '_')}"
+    # Nom simple : une apostrophe (« Can't ») cassait la recherche dans la galerie.
+    remote = f"{REMOTE_DIR}/autoclip_{int(time.time())}.mp4"
     d.push(str(video), remote)
     uri = _media_uri(d, remote)
 

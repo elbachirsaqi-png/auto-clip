@@ -91,6 +91,8 @@ class Pipeline:
         # Publication automatique : échecs par (moment, cible) et alertes déjà envoyées.
         self.publish_failures: dict[tuple[int, str], tuple[int, float]] = {}
         self.publish_alerts: set[str] = set()
+        # Après un échec, la cible entière attend : un bug commun ferait échouer toute la file.
+        self.target_retry_at: dict[str, float] = {}
         # login -> broadcaster_id / catégorie, remplis à chaque rafraîchissement.
         self.twitch_ids: dict[str, str] = {}
         self.twitch_games: dict[str, str] = {}
@@ -553,7 +555,7 @@ class Pipeline:
                                                    f"« {dest.name} » dans l'application (page Chaînes).")
                     continue
                 fails, retry_at = self.publish_failures.get((m.id, target), (0, 0.0))
-                if fails >= 3 or time.time() < retry_at:
+                if fails >= 3 or time.time() < max(retry_at, self.target_retry_at.get(target, 0)):
                     continue
                 last, count = await self.db.target_activity(target)
                 if not self._slot_free(dest, last, count):
@@ -578,6 +580,7 @@ class Pipeline:
         except Exception as e:
             fails = self.publish_failures.get((m.id, target), (0, 0.0))[0] + 1
             self.publish_failures[(m.id, target)] = (fails, time.time() + 30 * 60)
+            self.target_retry_at[target] = time.time() + 30 * 60
             log.exception("Publication de #%d sur %s échouée (%d/3)", m.id, platform, fails)
             await self.review.send_text(
                 f"⚠️ Échec de publication #{m.id} sur {PLATFORM_NAMES[platform]} (« {dest.name} », "

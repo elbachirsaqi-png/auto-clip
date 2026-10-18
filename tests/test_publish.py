@@ -78,7 +78,11 @@ async def test_publish_queue_spacing_and_retry(tmp_path, monkeypatch):
 
         assert await p.publish_next()  # #1 : échec, nouvel essai dans 30 min
         assert "Échec" in sent[-1] and "1/3" in sent[-1]
-        assert await p.publish_next()  # la file n'est pas bloquée : #2 part
+        # Un échec met toute la cible en pause 30 min : sinon un bug commun ferait échouer
+        # toute la file en quelques minutes.
+        assert not await p.publish_next()
+        p.target_retry_at.clear()  # 30 min plus tard
+        assert await p.publish_next()  # #2 part (#1 attend encore son propre délai)
         assert sent[-1].startswith("✅ Publié sur YouTube") and "shorts/abc" in sent[-1]
         assert not await p.publish_next()  # espacement de 60 min : rien d'autre maintenant
 
