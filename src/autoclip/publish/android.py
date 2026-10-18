@@ -36,7 +36,9 @@ def _tap_text(d, pattern: str, timeout: float) -> None:
     """Appuie sur le premier élément dont le texte ou la description correspond (FR / EN)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        for sel in (d(textMatches=pattern), d(descriptionMatches=pattern)):
+        # Les vrais boutons d'abord : un texte « Post » existe aussi ailleurs à l'écran.
+        for sel in (d(textMatches=pattern, className="android.widget.Button"),
+                    d(textMatches=pattern), d(descriptionMatches=pattern)):
             if sel.exists:
                 sel.click()
                 return
@@ -50,7 +52,9 @@ def _media_uri(d, remote: str) -> str:
              "-d", f"file://{remote}"])
     for _ in range(20):
         out = d.shell(["content", "query", "--uri", "content://media/external/video/media",
-                       "--projection", "_id", "--where", f"_data='{remote}'"]).output
+                       # La galerie enregistre /storage/emulated/0/…, pas le raccourci /sdcard.
+                       "--projection", "_id", "--where",
+                       f"_data LIKE '%{remote.removeprefix('/sdcard')}'"]).output
         found = re.search(r"_id=(\d+)", out)
         if found:
             return f"content://media/external/video/media/{found.group(1)}"
@@ -87,6 +91,9 @@ def publish_tiktok(video: Path, caption: str, serial: str = "", dry_run: bool = 
     field.click()
     d.send_keys(caption, clear=True)
     time.sleep(2)
+    if "mInputShown=true" in d.shell(["dumpsys", "input_method"]).output:
+        d.press("back")  # le clavier cache les boutons du bas : Retour le ferme d'abord
+        time.sleep(1.5)
 
     if dry_run:
         _tap_text(d, r"(?i)^(brouillons?|drafts?)$", timeout=20)
