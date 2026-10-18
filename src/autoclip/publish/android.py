@@ -105,9 +105,16 @@ def publish_tiktok(video: Path, caption: str, serial: str = "", dry_run: bool = 
 
     if dry_run:
         _tap_text(d, r"(?i)^(brouillons?|drafts?)$", timeout=20)
+        time.sleep(3)
+        d.press("home")
         return
     _tap_text(d, r"(?i)^(publier|post)$", timeout=20)
-    time.sleep(90)  # TikTok envoie la vidéo en arrière-plan : écran allumé le temps de l'envoi
+    # Après « Post », TikTok ouvre le fil et lit des vidéos en boucle : on retourne à l'accueil
+    # dès le début de l'envoi. Pas de fermeture forcée : l'envoi continue en arrière-plan.
+    time.sleep(15)
+    d.press("home")
+    time.sleep(75)  # temps de l'envoi en arrière-plan
+    d.screen_off()
 
 
 def main() -> None:
