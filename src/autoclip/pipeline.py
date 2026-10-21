@@ -578,6 +578,15 @@ class Pipeline:
                                            "est déconnecté : reconnecte-le dans l'application.")
             return
         except Exception as e:
+            if re.search(r"can't find any android device|device offline|device '.*' not found",
+                         str(e), re.IGNORECASE):
+                # Téléphone débranché : pas un échec de la vidéo, on ne consomme pas d'essai.
+                self.target_retry_at[target] = time.time() + 10 * 60
+                await self._alert_once(f"{target}:telephone",
+                                       "📵 Téléphone introuvable : vérifie le câble USB. Les "
+                                       "publications TikTok reprendront toutes seules.")
+                return
+            self.publish_alerts.discard(f"{target}:telephone")  # le téléphone répond de nouveau
             fails = self.publish_failures.get((m.id, target), (0, 0.0))[0] + 1
             self.publish_failures[(m.id, target)] = (fails, time.time() + 30 * 60)
             self.target_retry_at[target] = time.time() + 30 * 60

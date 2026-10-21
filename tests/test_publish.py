@@ -135,3 +135,41 @@ async def test_mark_published_manually_stops_auto_post(tmp_path, monkeypatch):
         await p.db.close()
         await p.http.aclose()
         await p.review.close()
+
+
+async def test_unplugged_phone_does_not_burn_attempts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pl, "PAUSE_FILE", tmp_path / "paused")
+    dest = channels.Destination(id="streamers", name="Streamers", streamers=["kaicenat"],
+                                youtube=False, tiktok_via="android")
+    channels.save([dest])
+    p = pl.Pipeline(Settings(_env_file=None, db_path=tmp_path / "t.db", work_dir=tmp_path / "w"))
+    await p.db.connect()
+    sent = []
+
+    async def fake_send(text):
+        sent.append(text)
+
+    async def unplugged(*_a, **_kw):
+        raise RuntimeError("tiktok (téléphone) / Streamers : Can't find any android device/emulator")
+
+    p.review.send_text = fake_send
+    monkeypatch.setattr(pl, "publish", unplugged)
+    decision = EditDecision(keep=True, reason="", cuts=[{"start_s": 0, "end_s": 20}], hook="h",
+                            creative_direction="", highlight_words=[], title="Kai", hashtags=[])
+    try:
+        m = moment()
+        m.id = await p.db.insert_moment(m)
+        await p.db.advance(m, Status.APPROVED, decision_json=decision.model_dump_json())
+        video = tmp_path / "final.mp4"
+        video.write_bytes(b"x")
+        kit.build_kit(m, decision, video)
+        for _ in range(5):  # 5 tentatives téléphone débranché
+            await p.publish_next()
+            p.target_retry_at.clear()
+        assert (m.id, "tiktok:streamers") not in p.publish_failures  # aucun essai consommé
+        assert len(sent) == 1 and "Téléphone introuvable" in sent[0]  # une seule alerte
+    finally:
+        await p.db.close()
+        await p.http.aclose()
+        await p.review.close()
