@@ -253,11 +253,14 @@ class Pipeline:
         except Exception:  # noqa: BLE001  (au pire, la commande sera relue une fois)
             log.warning("Impossible de confirmer les messages Telegram avant le redémarrage")
         PID_FILE.unlink(missing_ok=True)  # sinon le nouveau croirait le pipeline déjà lancé
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        subprocess.Popen([sys.executable, "-m", "autoclip"], cwd=os.getcwd(),  # noqa: ASYNC220  (on quitte juste après)
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+        no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         if sys.platform == "win32":
+            # Via « cmd /c start » : le nouveau pipeline n'est pas un enfant de celui-ci, sinon
+            # le taskkill /T ci-dessous le tuerait aussi (il s'arrêtait sans se relancer).
+            pythonw = Path(sys.executable).with_name("pythonw.exe")  # pas de fenêtre console
+            subprocess.Popen(["cmd", "/c", "start", "", str(pythonw), "-m", "autoclip"],  # noqa: ASYNC220
+                             cwd=os.getcwd(), creationflags=no_window)
+            time.sleep(3)  # noqa: ASYNC251  (laisse cmd lancer le nouveau pipeline, on quitte ensuite)
             # /T : arrête aussi les rendus (Node, Chrome) lancés par ce processus.
             subprocess.run(["taskkill", "/PID", str(os.getpid()), "/T", "/F"],  # noqa: ASYNC221
                            capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
