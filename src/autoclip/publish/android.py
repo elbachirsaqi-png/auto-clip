@@ -13,6 +13,7 @@ Test sans publier (enregistre en brouillon) :
 
 import re
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -30,6 +31,19 @@ def adb_path() -> str:
     for exe in Path.home().glob("AppData/Local/Microsoft/WinGet/Packages/Google.PlatformTools*/platform-tools/adb.exe"):
         return str(exe)
     raise RuntimeError("adb introuvable : installe Google Platform Tools")
+
+
+def connect(serial: str = ""):
+    """Connexion au téléphone. Si le service ADB l'a « perdu » (micro-coupure USB : il reste
+    branché mais adb ne le voit plus), on redémarre le service et on réessaie."""
+    try:
+        return u2.connect(serial or None)
+    except Exception:  # noqa: BLE001  (adbutils lève AdbError ou RuntimeError selon les cas)
+        adb = adb_path()
+        subprocess.run([adb, "kill-server"], capture_output=True, check=False)
+        subprocess.run([adb, "start-server"], capture_output=True, check=False)
+        time.sleep(3)
+        return u2.connect(serial or None)
 
 
 def _tap_text(d, pattern: str, timeout: float) -> None:
@@ -66,7 +80,7 @@ def publish_tiktok(video: Path, caption: str, serial: str = "", dry_run: bool = 
     import os
 
     os.environ.setdefault("ADBUTILS_ADB_PATH", adb_path())  # adb hors du PATH (winget)
-    d = u2.connect(serial or None)
+    d = connect(serial)
     apps = set(d.app_list())
     pkg = next((p for p in TIKTOK_PACKAGES if p in apps), None)
     if pkg is None:
