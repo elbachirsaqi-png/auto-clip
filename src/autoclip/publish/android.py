@@ -128,7 +128,8 @@ def publish_tiktok(video: Path, caption: str, serial: str = "", dry_run: bool = 
     time.sleep(15)
     d.press("home")
     time.sleep(75)  # temps de l'envoi en arrière-plan
-    d.screen_off()
+    # Pas d'écran éteint : verrouillé des heures, ColorOS repassait l'USB en mode MIDI
+    # (plus d'ADB) et la publication suivante échouait. « Stay awake » le garde allumé.
 
 
 def main() -> None:
