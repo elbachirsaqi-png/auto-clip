@@ -22,6 +22,7 @@ import uiautomator2 as u2
 
 TIKTOK_PACKAGES = ("com.zhiliaoapp.musically", "com.ss.android.ugc.trill")
 REMOTE_DIR = "/sdcard/DCIM/AutoClip"
+ERRORS_DIR = Path("data/publish_errors")
 
 
 def adb_path() -> str:
@@ -95,41 +96,54 @@ def publish_tiktok(video: Path, caption: str, serial: str = "", dry_run: bool = 
     d.push(str(video), remote)
     uri = _media_uri(d, remote)
 
-    d.app_stop(pkg)  # repart d'un écran propre
-    d.shell(["am", "start", "-a", "android.intent.action.SEND", "-t", "video/mp4",
-             "--eu", "android.intent.extra.STREAM", uri, "--grant-read-uri-permission", "-p", pkg])
+    try:
+        d.app_stop(pkg)  # repart d'un écran propre
+        d.shell(["am", "start", "-a", "android.intent.action.SEND", "-t", "video/mp4",
+                 "--eu", "android.intent.extra.STREAM", uri, "--grant-read-uri-permission", "-p", pkg])
 
-    _tap_text(d, r"(?i)^(suivant|next)$", timeout=90)  # éditeur vidéo -> écran de publication
-    field = d(className="android.widget.EditText")
-    if not field.wait(timeout=30):
-        raise RuntimeError("TikTok Android : champ de description introuvable")
-    field.click()
-    d.send_keys(caption, clear=True)
-    time.sleep(2)
-    # Après un hashtag, TikTok ouvre une liste de suggestions (« #twitch · 40.7M posts ») qui
-    # recouvre les boutons du bas : on touche la première suggestion, ce qui la ferme.
-    for _ in range(3):
-        if not d(textMatches=r"(?i)^[\d.,]+\s*[KMB]?\s*(posts|publications|vidéos|videos)$").exists:
-            break
-        d(textMatches=r"^#\S+$", className="android.widget.TextView").click()
-        time.sleep(1.5)
-    if "mInputShown=true" in d.shell(["dumpsys", "input_method"]).output:
-        d.press("back")  # le clavier cache les boutons du bas : Retour le ferme d'abord
-        time.sleep(1.5)
+        # Parfois TikTok demande d'abord « Share on TikTok » : Video ou Message -> Video.
+        if d(textMatches=r"(?i)^(share on tiktok|partager sur tiktok)$").wait(timeout=15):
+            _tap_text(d, r"(?i)^(video|vidéo)$", timeout=10)
+        _tap_text(d, r"(?i)^(suivant|next)$", timeout=90)  # éditeur vidéo -> écran de publication
+        field = d(className="android.widget.EditText")
+        if not field.wait(timeout=30):
+            raise RuntimeError("TikTok Android : champ de description introuvable")
+        field.click()
+        d.send_keys(caption, clear=True)
+        time.sleep(2)
+        # Après un hashtag, TikTok ouvre une liste de suggestions (« #twitch · 40.7M posts ») qui
+        # recouvre les boutons du bas : on touche la première suggestion, ce qui la ferme.
+        for _ in range(3):
+            if not d(textMatches=r"(?i)^[\d.,]+\s*[KMB]?\s*(posts|publications|vidéos|videos)$").exists:
+                break
+            d(textMatches=r"^#\S+$", className="android.widget.TextView").click()
+            time.sleep(1.5)
+        if "mInputShown=true" in d.shell(["dumpsys", "input_method"]).output:
+            d.press("back")  # le clavier cache les boutons du bas : Retour le ferme d'abord
+            time.sleep(1.5)
 
-    if dry_run:
-        _tap_text(d, r"(?i)^(brouillons?|drafts?)$", timeout=20)
-        time.sleep(3)
+        if dry_run:
+            _tap_text(d, r"(?i)^(brouillons?|drafts?)$", timeout=20)
+            time.sleep(3)
+            d.press("home")
+            return
+        _tap_text(d, r"(?i)^(publier|post)$", timeout=20)
+        # Après « Post », TikTok ouvre le fil et lit des vidéos en boucle : on retourne à l'accueil
+        # dès le début de l'envoi. Pas de fermeture forcée : l'envoi continue en arrière-plan.
+        time.sleep(15)
         d.press("home")
-        return
-    _tap_text(d, r"(?i)^(publier|post)$", timeout=20)
-    # Après « Post », TikTok ouvre le fil et lit des vidéos en boucle : on retourne à l'accueil
-    # dès le début de l'envoi. Pas de fermeture forcée : l'envoi continue en arrière-plan.
-    time.sleep(15)
-    d.press("home")
-    time.sleep(75)  # temps de l'envoi en arrière-plan
-    # Pas d'écran éteint : verrouillé des heures, ColorOS repassait l'USB en mode MIDI
-    # (plus d'ADB) et la publication suivante échouait. « Stay awake » le garde allumé.
+        time.sleep(75)  # temps de l'envoi en arrière-plan
+        # Pas d'écran éteint : verrouillé des heures, ColorOS repassait l'USB en mode MIDI
+        # (plus d'ADB) et la publication suivante échouait. « Stay awake » le garde allumé.
+    except Exception as e:
+        # Capture du téléphone pour voir ce qui bloquait (fenêtre surgie, mise à jour…).
+        shot = ERRORS_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_tiktok-telephone.png"
+        try:
+            ERRORS_DIR.mkdir(parents=True, exist_ok=True)
+            d.screenshot(str(shot))
+        except Exception:  # noqa: BLE001  (la capture ne doit pas masquer l'erreur)
+            raise e from None
+        raise RuntimeError(f"{e} (capture : {shot})") from e
 
 
 def main() -> None:
