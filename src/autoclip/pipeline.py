@@ -557,8 +557,8 @@ class Pipeline:
                     await self._alert_once(target, f"🔑 Connecte le profil {PLATFORM_NAMES[platform]} de "
                                                    f"« {dest.name} » dans l'application (page Chaînes).")
                     continue
-                fails, retry_at = self.publish_failures.get((m.id, target), (0, 0.0))
-                if fails >= 3 or time.time() < max(retry_at, self.target_retry_at.get(target, 0)):
+                retry_at = self.publish_failures.get((m.id, target), (0, 0.0))[1]
+                if time.time() < max(retry_at, self.target_retry_at.get(target, 0)):
                     continue
                 last, count = await self.db.target_activity(target)
                 if not self._slot_free(dest, last, count):
@@ -591,13 +591,15 @@ class Pipeline:
                 return
             self.publish_alerts.discard(f"{target}:telephone")  # le téléphone répond de nouveau
             fails = self.publish_failures.get((m.id, target), (0, 0.0))[0] + 1
-            self.publish_failures[(m.id, target)] = (fails, time.time() + 30 * 60)
+            # Jamais abandonnée : après 3 échecs d'affilée, nouvelle série de 3 essais dans 6 h.
+            delay = 30 * 60 if fails < 3 else 6 * 3600
+            self.publish_failures[(m.id, target)] = (fails % 3, time.time() + delay)
             self.target_retry_at[target] = time.time() + 30 * 60
             log.exception("Publication de #%d sur %s échouée (%d/3)", m.id, platform, fails)
             await self.review.send_text(
                 f"⚠️ Échec de publication #{m.id} sur {PLATFORM_NAMES[platform]} (« {dest.name} », "
                 f"essai {fails}/3"
-                + (", nouvel essai dans 30 min" if fails < 3 else ", publie-le à la main")
+                + (", nouvel essai dans 30 min" if fails < 3 else ", nouvel essai dans 6 h")
                 + f") :\n{str(e)[:500]}")
             return
         await self.db.record_publication(m.id, target, url or "")
