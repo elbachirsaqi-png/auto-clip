@@ -720,6 +720,10 @@ class ChannelsPage(ctk.CTkFrame):
                 ctk.CTkOptionMenu(line, values=["PC (Chrome)", "Téléphone"], width=130, height=30,
                                   variable=row["tiktok_via"], fg_color=CARD, button_color=BORDER,
                                   button_hover_color=ACCENT).pack(side="left", padx=12)
+                row["phone_serial"] = tk.StringVar(value=d.phone_serial)
+                ctk.CTkEntry(line, textvariable=row["phone_serial"], width=150, height=30, font=font(12),
+                             placeholder_text="n° du téléphone", fg_color=CARD,
+                             border_color=BORDER).pack(side="left")
             if platform == "youtube":
                 row["youtube_visibility"] = tk.StringVar(value=d.youtube_visibility)
                 ctk.CTkOptionMenu(line, values=["public", "unlisted", "private"], width=110, height=30,
@@ -744,7 +748,8 @@ class ChannelsPage(ctk.CTkFrame):
                 max_per_day=int(r["max_per_day"].get() or 0),
                 min_gap_minutes=int(r["min_gap_minutes"].get() or 0),
                 fallback=r["fallback"].get(),
-                tiktok_via="android" if r["tiktok_via"].get() == "Téléphone" else "pc"))
+                tiktok_via="android" if r["tiktok_via"].get() == "Téléphone" else "pc",
+                phone_serial=r["phone_serial"].get().strip()))
         return dests
 
     def save(self, quiet=False):

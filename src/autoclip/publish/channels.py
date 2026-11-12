@@ -31,6 +31,7 @@ class Destination(BaseModel):
     tiktok: bool = True
     youtube_visibility: str = "public"  # public, unlisted, private
     tiktok_via: str = "pc"  # pc (Chrome) ou android (téléphone branché, application TikTok)
+    phone_serial: str = ""  # numéro ADB du téléphone de cette chaîne (adb devices) ; vide = le seul branché
     max_per_day: int = 3  # par plateforme
     min_gap_minutes: int = 120  # entre deux publications sur la même plateforme
     # Chaîne par défaut : reçoit les clips dont aucune chaîne ne prévoit la catégorie.

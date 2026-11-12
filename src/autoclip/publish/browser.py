@@ -213,7 +213,8 @@ async def publish(dest: Destination, platform: str, video: Path, *, title: str, 
         from .android import publish_tiktok
 
         try:
-            await asyncio.to_thread(publish_tiktok, video, caption, dry_run=dry_run)
+            await asyncio.to_thread(publish_tiktok, video, caption, dest.phone_serial,
+                                    dry_run=dry_run)
         except Exception as e:
             raise PublishError(f"tiktok (téléphone) / {dest.name} : {e}"[:400]) from e
         return None

@@ -8,7 +8,7 @@ Prérequis : débogage USB activé et autorisé, écran sans code de verrouillag
 développeur « Rester activé » (écran allumé pendant la charge), TikTok connecté.
 
 Test sans publier (enregistre en brouillon) :
-    python -m autoclip.publish.android test <video.mp4>
+    python -m autoclip.publish.android test <video.mp4> [numéro du téléphone]
 """
 
 import re
@@ -147,10 +147,10 @@ def publish_tiktok(video: Path, caption: str, serial: str = "", dry_run: bool = 
 
 
 def main() -> None:
-    if len(sys.argv) != 3 or sys.argv[1] != "test":
+    if len(sys.argv) not in (3, 4) or sys.argv[1] != "test":
         print(__doc__)
         sys.exit(2)
-    publish_tiktok(Path(sys.argv[2]), "Test AutoClip 🎬\n\n#test", dry_run=True)
+    publish_tiktok(Path(sys.argv[2]), "Test AutoClip 🎬\n\n#test", *sys.argv[3:], dry_run=True)
     print("Brouillon enregistré dans TikTok : vérifie-le puis supprime-le.")
 
 
