@@ -97,14 +97,21 @@ def publish_tiktok(video: Path, caption: str, serial: str = "", dry_run: bool = 
     uri = _media_uri(d, remote)
 
     try:
-        d.app_stop(pkg)  # repart d'un écran propre
-        d.shell(["am", "start", "-a", "android.intent.action.SEND", "-t", "video/mp4",
-                 "--eu", "android.intent.extra.STREAM", uri, "--grant-read-uri-permission", "-p", pkg])
-
-        # Parfois TikTok demande d'abord « Share on TikTok » : Video ou Message -> Video.
-        if d(textMatches=r"(?i)^(share on tiktok|partager sur tiktok)$").wait(timeout=15):
-            _tap_text(d, r"(?i)^(video|vidéo)$", timeout=10)
-        _tap_text(d, r"(?i)^(suivant|next)$", timeout=90)  # éditeur vidéo -> écran de publication
+        for attempt in range(2):
+            d.app_stop(pkg)  # repart d'un écran propre
+            d.shell(["am", "kill-all"])  # libère la mémoire (applis en arrière-plan) : vieux téléphones
+            d.shell(["am", "start", "-a", "android.intent.action.SEND", "-t", "video/mp4",
+                     "--eu", "android.intent.extra.STREAM", uri, "--grant-read-uri-permission", "-p", pkg])
+            try:
+                # Parfois TikTok demande d'abord « Share on TikTok » : Video ou Message -> Video.
+                if d(textMatches=r"(?i)^(share on tiktok|partager sur tiktok)$").wait(timeout=15):
+                    _tap_text(d, r"(?i)^(video|vidéo)$", timeout=10)
+                _tap_text(d, r"(?i)^(suivant|next)$", timeout=90)  # éditeur -> écran de publication
+                break
+            except RuntimeError:
+                # TikTok s'est fermé tout seul (manque de mémoire) : on relance le partage une fois.
+                if attempt or d.app_current().get("package") == pkg:
+                    raise
         field = d(className="android.widget.EditText")
         if not field.wait(timeout=30):
             raise RuntimeError("TikTok Android : champ de description introuvable")
