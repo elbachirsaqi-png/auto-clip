@@ -122,16 +122,20 @@ def publish_tiktok(video: Path, caption: str, serial: str = "", dry_run: bool = 
         field.click()
         d.send_keys(caption, clear=True)
         time.sleep(2)
-        # Après un hashtag, TikTok ouvre une liste de suggestions (« #twitch · 40.7M posts ») qui
-        # recouvre les boutons du bas : on touche la première suggestion, ce qui la ferme.
-        for _ in range(3):
-            if not d(textMatches=r"(?i)^[\d.,]+\s*[KMB]?\s*(posts|publications|vidéos|videos)$").exists:
+        # La liste de suggestions de hashtags (« #twitch · 40.7M posts ») et le clavier recouvrent
+        # les boutons du bas. Ils peuvent apparaître dans n'importe quel ordre (la liste reste
+        # parfois ouverte une fois le clavier fermé) : on dégage jusqu'à ce que les deux aient disparu.
+        suggestion = d(textMatches=r"(?i)^[\d.,]+\s*[KMB]?\s*(posts|publications|vidéos|videos)$")
+        for _ in range(6):
+            time.sleep(1.5)
+            if suggestion.exists:
+                # Touche la première suggestion (à gauche de son « … posts ») : ça ferme la liste.
+                box = suggestion.info["bounds"]
+                d.click(100, (box["top"] + box["bottom"]) // 2)
+            elif "mInputShown=true" in d.shell(["dumpsys", "input_method"]).output:
+                d.press("back")  # ferme le clavier
+            else:
                 break
-            d(textMatches=r"^#\S+$", className="android.widget.TextView").click()
-            time.sleep(1.5)
-        if "mInputShown=true" in d.shell(["dumpsys", "input_method"]).output:
-            d.press("back")  # le clavier cache les boutons du bas : Retour le ferme d'abord
-            time.sleep(1.5)
 
         if dry_run:
             _tap_text(d, r"(?i)^(brouillons?|drafts?)$", timeout=20)
