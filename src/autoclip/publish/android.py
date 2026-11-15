@@ -87,6 +87,10 @@ def publish_tiktok(video: Path, caption: str, serial: str = "", dry_run: bool = 
     if pkg is None:
         raise RuntimeError("TikTok n'est pas installé sur le téléphone")
 
+    # Sans internet, TikTok affiche quand même « publié » mais l'envoi n'aboutit jamais.
+    if d.shell(["ping", "-c", "2", "-W", "5", "8.8.8.8"]).exit_code != 0:
+        raise RuntimeError("téléphone sans internet")
+
     d.screen_on()
     d.unlock()  # glisse l'écran de verrouillage (sans code)
     d.shell(["rm", "-rf", REMOTE_DIR])  # vidéos des publications précédentes
