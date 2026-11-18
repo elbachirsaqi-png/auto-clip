@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from ..models import Moment
+from ..models import EditDecision, Moment
 
 CHANNELS_FILE = Path("data/channels.json")
 PROFILES_DIR = Path("data/profiles")
@@ -36,6 +36,9 @@ class Destination(BaseModel):
     min_gap_minutes: int = 120  # entre deux publications sur la même plateforme
     # Chaîne par défaut : reçoit les clips dont aucune chaîne ne prévoit la catégorie.
     fallback: bool = False
+    # Imposés à chaque vidéo de la chaîne : mot-clé dans le titre (ex. « GTA 6 ») et hashtags.
+    title_keyword: str = ""
+    hashtags: list[str] = []
 
     def matches(self, m: Moment, ignore_enabled: bool = False) -> bool:
         if not (self.enabled or ignore_enabled):
@@ -64,8 +67,21 @@ DEFAULTS = [
                 categories=["Counter-Strike"]),
     # Prête pour la sortie : activer dans l'application le moment venu.
     Destination(id="gta6", name="GTA 6", enabled=False,
-                categories=["Grand Theft Auto VI", "GTA VI", "GTA 6"]),
+                categories=["Grand Theft Auto VI", "GTA VI", "GTA 6"],
+                title_keyword="GTA 6", hashtags=["#gta6"]),
 ]
+
+
+def brand(decision: EditDecision, dest: Destination | None) -> EditDecision:
+    """Ajoute au titre le mot-clé de la chaîne s'il n'y est pas, et ses hashtags en tête."""
+    if dest is None:
+        return decision
+    title, kw = decision.title, dest.title_keyword.strip()
+    if kw and kw.lower() not in title.lower():
+        title = f"{title[:100 - len(kw) - 3].rstrip()} | {kw}"  # YouTube : 100 caractères max
+    have = {h.lower().lstrip("#") for h in decision.hashtags}
+    extra = [h for h in dest.hashtags if h.lower().lstrip("#") not in have]
+    return decision.model_copy(update={"title": title, "hashtags": [*extra, *decision.hashtags]})
 
 
 def load() -> list[Destination]:

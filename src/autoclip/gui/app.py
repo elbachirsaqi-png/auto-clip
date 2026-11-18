@@ -693,6 +693,10 @@ class ChannelsPage(ctk.CTkFrame):
 
         field("Streamers", "pseudos séparés par des virgules", ", ".join(d.streamers), "streamers")
         field("Catégories", "mots-clés du jeu (ex. Counter-Strike)", ", ".join(d.categories), "categories")
+        field("Mot-clé du titre", "ajouté au titre s'il n'y est pas (ex. GTA 6)", d.title_keyword,
+              "title_keyword")
+        field("Hashtags imposés", "toujours ajoutés, séparés par des virgules (ex. #gta6)",
+              ", ".join(d.hashtags), "hashtags")
 
         rhythm = ctk.CTkFrame(card, fg_color="transparent")
         rhythm.pack(fill="x", padx=18, pady=3)
@@ -749,7 +753,8 @@ class ChannelsPage(ctk.CTkFrame):
                 min_gap_minutes=int(r["min_gap_minutes"].get() or 0),
                 fallback=r["fallback"].get(),
                 tiktok_via="android" if r["tiktok_via"].get() == "Téléphone" else "pc",
-                phone_serial=r["phone_serial"].get().strip()))
+                phone_serial=r["phone_serial"].get().strip(),
+                title_keyword=r["title_keyword"].get().strip(), hashtags=split("hashtags")))
         return dests
 
     def save(self, quiet=False):

@@ -32,6 +32,19 @@ def test_routing_by_streamer_then_category():
     assert channels.route(moment("payo", "World of Warcraft"), dests) is None
 
 
+def test_brand_adds_channel_keyword_and_hashtags():
+    dest = channels.Destination(id="gta6", name="GTA 6", title_keyword="GTA 6", hashtags=["#gta6"])
+    d = EditDecision(keep=True, reason="", cuts=[{"start_s": 0, "end_s": 20}], hook="h",
+                     creative_direction="", highlight_words=[], title="xQc crashes a jet",
+                     hashtags=["xqc"])
+    b = channels.brand(d, dest)
+    assert b.title == "xQc crashes a jet | GTA 6" and b.hashtags == ["#gta6", "xqc"]
+    assert channels.brand(b, dest) == b  # déjà là : rien ne change
+    assert "#gta6" in kit.tiktok_caption(b, moment("xqc"))
+    long = channels.brand(d.model_copy(update={"title": "x" * 100}), dest).title
+    assert len(long) == 100 and long.endswith(" | GTA 6")
+
+
 def test_split_caption():
     text, tags = split_caption("Big moment\n\n🎥 xqc (Kick)\n\n#xqc #gaming")
     assert text == "Big moment\n\n🎥 xqc (Kick)"

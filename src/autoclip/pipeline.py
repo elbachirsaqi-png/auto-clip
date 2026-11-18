@@ -493,11 +493,11 @@ class Pipeline:
         if m is None or not m.render_path or not Path(m.render_path).exists():
             log.warning("Moment #%d : vidéo finale introuvable, pas de kit", moment_id)
             return
-        decision = EditDecision.model_validate_json(m.decision_json)
+        dest = channels.route(m)
+        decision = channels.brand(EditDecision.model_validate_json(m.decision_json), dest)
         video, _ = build_kit(m, decision, Path(m.render_path), self.s.contact_email, self.s.clip_language)
         self.discard_files(moment_id)  # la vidéo est dans le kit, le reste ne sert plus
         log.info("Kit de publication prêt : %s", video.name)
-        dest = channels.route(m)
         if dest is not None and self.s.auto_publish and dest.platforms():
             where = " + ".join(PLATFORM_NAMES[p] for p in dest.platforms())
             await self.review.send_text(
@@ -568,7 +568,7 @@ class Pipeline:
         return False
 
     async def _publish_one(self, m: Moment, dest, platform: str, video: Path) -> None:
-        decision = EditDecision.model_validate_json(m.decision_json)
+        decision = channels.brand(EditDecision.model_validate_json(m.decision_json), dest)
         target = f"{platform}:{dest.id}"
         log.info("Publication de #%d sur %s (%s)…", m.id, platform, dest.name)
         try:
