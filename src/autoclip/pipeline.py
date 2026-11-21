@@ -32,7 +32,7 @@ from .monitor.detector import SpikeDetector
 from .monitor.kick import KickAPI, KickChat
 from .monitor.twitch import TwitchAPI, TwitchChat
 from .procutil import PID_FILE
-from .publish import channels
+from .publish import channels, rewards
 from .publish.browser import NotLoggedIn, publish
 from .publish.kit import archive_kit, build_kit, description, find_kit, tiktok_caption
 from .render.hyperframes import LintError, Renderer, build_segments, remap_words
@@ -93,6 +93,7 @@ class Pipeline:
         self.publish_alerts: set[str] = set()
         # Après un échec, la cible entière attend : un bug commun ferait échouer toute la file.
         self.target_retry_at: dict[str, float] = {}
+        self.reward_tasks: set[asyncio.Task] = set()
         # login -> broadcaster_id / catégorie, remplis à chaque rafraîchissement.
         self.twitch_ids: dict[str, str] = {}
         self.twitch_games: dict[str, str] = {}
@@ -568,13 +569,20 @@ class Pipeline:
         return False
 
     async def _publish_one(self, m: Moment, dest, platform: str, video: Path) -> None:
-        decision = channels.brand(EditDecision.model_validate_json(m.decision_json), dest)
+        campaign = rewards.match(m, dest.id)
+        if campaign is not None and platform not in campaign.platforms:
+            campaign = None
+        decision = rewards.apply(channels.brand(EditDecision.model_validate_json(m.decision_json), dest),
+                                 campaign)
+        extra = campaign.cta if campaign else ""
         target = f"{platform}:{dest.id}"
         log.info("Publication de #%d sur %s (%s)…", m.id, platform, dest.name)
+        started = time.time()
         try:
             url = await publish(dest, platform, video, title=decision.title,
-                                description=description(decision, m, self.s.contact_email, self.s.clip_language),
-                                caption=tiktok_caption(decision, m),
+                                description=description(decision, m, self.s.contact_email,
+                                                        self.s.clip_language, extra),
+                                caption=tiktok_caption(decision, m, extra),
                                 headless=self.s.publish_headless)
         except NotLoggedIn:
             await self._alert_once(target, f"🔑 Le profil {PLATFORM_NAMES[platform]} de « {dest.name} » "
@@ -610,6 +618,27 @@ class Pipeline:
         await self.review.send_text(
             f"✅ Publié sur {PLATFORM_NAMES[platform]} (« {dest.name} »)"
             + (f"\n{url}" if url else ""))
+        if campaign is not None:
+            # En tâche de fond : le lien TikTok met quelques minutes à apparaître sur le site.
+            task = asyncio.create_task(
+                self._submit_reward(m, campaign, platform, url, decision.title, started))
+            self.reward_tasks.add(task)
+            task.add_done_callback(self.reward_tasks.discard)
+
+    async def _submit_reward(self, m: Moment, c: rewards.Campaign, platform: str, url: str | None,
+                             title: str, since: float) -> None:
+        """Soumet la publication à sa campagne Content Rewards (30 min max après publication)."""
+        try:
+            link = await rewards.submit(c, platform, url, title, since)
+        except Exception as e:  # la vidéo est publiée : seule la soumission a raté
+            log.exception("Soumission Content Rewards de #%d échouée", m.id)
+            await self.review.send_text(
+                f"⚠️ #{m.id} non soumis à la campagne « {c.name} » ({PLATFORM_NAMES[platform]}) : "
+                f"{str(e)[:300]}\nÀ soumettre à la main dans les 30 min : {rewards.SITE}/c/campaigns/{c.id}")
+            return
+        log.info("Soumis à Content Rewards : #%d %s -> %s", m.id, link, c.name)
+        await self.review.send_text(
+            f"💰 #{m.id} soumis à la campagne « {c.name} » ({PLATFORM_NAMES[platform]})\n{link}")
 
     async def publish_loop(self) -> None:
         while True:

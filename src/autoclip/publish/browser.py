@@ -20,7 +20,6 @@ from datetime import datetime
 from pathlib import Path
 
 from playwright.async_api import BrowserContext, Page, async_playwright
-from playwright.async_api import TimeoutError as PWTimeout
 
 from .channels import Destination, load
 
@@ -78,6 +77,23 @@ async def _replace_text(page: Page, selector: str, text: str) -> None:
 # --- YouTube ------------------------------------------------------------------------------
 
 
+YT_LINK = re.compile(r"(?:youtube\.com/shorts/|youtu\.be/)([\w-]{11})")
+
+
+async def _upload_link(page: Page, tries: int = 30) -> str | None:
+    """Lien de la vidéo, affiché dans la fenêtre d'envoi dès que YouTube lui a donné un numéro.
+    On le cherche dans le code de la fenêtre (les noms des éléments de Studio changent souvent),
+    pas de toute la page : le tableau de bord derrière montre aussi la vidéo précédente."""
+    dialogs = page.locator("ytcp-uploads-dialog, ytcp-video-share-dialog")
+    for _ in range(tries):
+        for i in range(await dialogs.count()):
+            found = YT_LINK.search(await dialogs.nth(i).inner_html())
+            if found:
+                return f"https://youtube.com/shorts/{found.group(1)}"
+        await _pause(page, 1000)
+    return None
+
+
 async def _youtube(page: Page, video: Path, title: str, description: str, visibility: str,
                    dry_run: bool) -> str | None:
     await page.goto("https://www.youtube.com/upload", wait_until="domcontentloaded")
@@ -103,11 +119,8 @@ async def _youtube(page: Page, video: Path, title: str, description: str, visibi
     await page.locator(f'tp-yt-paper-radio-button[name="{radio}"]').first.click()
     await _pause(page)
 
-    url = None
-    link = page.locator("span.video-url-fadeable a, ytcp-video-info a.ytcp-video-info").first
-    try:
-        url = await link.get_attribute("href", timeout=30_000)
-    except PWTimeout:
+    url = await _upload_link(page)
+    if not url:
         log.warning("Lien de la vidéo YouTube introuvable (publication quand même)")
 
     if dry_run:
@@ -133,11 +146,7 @@ async def _youtube(page: Page, video: Path, title: str, description: str, visibi
         if not await done.is_visible() or (
                 await published.count() and await published.first.is_visible()):
             await _pause(page, 2000)
-            if not url:  # lien affiché dans la fenêtre « Vidéo mise en ligne »
-                link = page.locator('a[href*="youtube.com/shorts/"], a[href*="youtu.be/"]')
-                if await link.count():
-                    url = (await link.first.get_attribute("href") or "").split("?")[0] or None
-            return url
+            return url or await _upload_link(page, tries=5)
         if await checking.count() and await checking.first.is_visible():
             await page.keyboard.press("Escape")
             await _pause(page, 60_000)

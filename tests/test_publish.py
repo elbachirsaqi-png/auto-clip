@@ -45,6 +45,22 @@ def test_brand_adds_channel_keyword_and_hashtags():
     assert len(long) == 100 and long.endswith(" | GTA 6")
 
 
+def test_reward_campaign_match_and_caption():
+    from autoclip.publish import rewards
+
+    c = rewards.Campaign(id="x", name="Bobby", streamers=["Bobby_VanRiper"], category="grand theft auto",
+                         channels=["gta6"], hashtags=["#bobbyvanriper"], cta="Follow Bobby on Twitch")
+    gta = moment("bobby_vanriper", "Grand Theft Auto VI")
+    assert rewards.match(gta, "gta6", [c]) is c
+    assert rewards.match(moment("bobby_vanriper", "Just Chatting"), "gta6", [c]) is None
+    assert rewards.match(gta, "streamers", [c]) is None
+    assert rewards.match(gta, "gta6", [c.model_copy(update={"until": "2000-01-01"})]) is None
+    d = EditDecision(keep=True, reason="", cuts=[{"start_s": 0, "end_s": 20}], hook="h",
+                     creative_direction="", highlight_words=[], title="t", hashtags=["a", "b", "c", "d", "e"])
+    cap = kit.tiktok_caption(rewards.apply(d, c), gta, c.cta)
+    assert "#bobbyvanriper" in cap and "Follow Bobby on Twitch" in cap
+
+
 def test_split_caption():
     text, tags = split_caption("Big moment\n\n🎥 xqc (Kick)\n\n#xqc #gaming")
     assert text == "Big moment\n\n🎥 xqc (Kick)"

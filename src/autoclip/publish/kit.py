@@ -95,18 +95,20 @@ def hashtags(decision: EditDecision) -> list[str]:
     return tags
 
 
-def description(decision: EditDecision, m: Moment, contact_email: str = "", language: str = "en") -> str:
-    """Description complète : 2 lignes, crédit du streamer, contact pour retrait, hashtags."""
+def description(decision: EditDecision, m: Moment, contact_email: str = "", language: str = "en",
+                extra: str = "") -> str:
+    """Description complète : 2 lignes, crédit du streamer, contact pour retrait, hashtags.
+    `extra` : ligne imposée par une campagne (appel à suivre le streamer…), après le crédit."""
     body = decision.description.strip() or decision.hook
     credit = f"🎥 {m.channel} : {CHANNEL_URLS.get(m.platform, '{}').format(m.channel)}"
-    parts = [body, credit]
+    parts = [body, credit, *([extra] if extra else [])]
     if contact_email:
         parts.append(CONTACT_LINES.get(language, CONTACT_LINES["en"]).format(contact_email))
     parts.append(" ".join(hashtags(decision)))
     return "\n\n".join(parts)
 
 
-def tiktok_caption(decision: EditDecision, m: Moment) -> str:
+def tiktok_caption(decision: EditDecision, m: Moment, extra: str = "") -> str:
     """Légende TikTok : pas de titre séparé, seule la première ligne s'affiche avant « plus ».
 
     On ouvre donc sur le titre, puis le crédit, puis 5 hashtags au plus (sans #Shorts, propre à
@@ -115,7 +117,7 @@ def tiktok_caption(decision: EditDecision, m: Moment) -> str:
     tags = [t for t in hashtags(decision) if t.lower() != "#shorts"][:5]
     if not any(t.lower().lstrip("#") == m.channel.lower() for t in tags):
         tags = [f"#{m.channel}", *tags][:5]
-    credit = f"🎥 {m.channel} ({m.platform.capitalize()})"
+    credit = f"🎥 {m.channel} ({m.platform.capitalize()})" + (f"\n{extra}" if extra else "")
     return f"{decision.title}\n\n{credit}\n\n{' '.join(tags)}"[:2200]
 
 
